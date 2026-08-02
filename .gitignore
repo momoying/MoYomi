@@ -1,0 +1,32 @@
+# Python caches and local virtual environments
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+env/
+
+# IDE and Flet local development state
+.idea/
+.flet/
+
+# Local coding and maintenance notes
+DEVELOPMENT_GUIDE.md
+
+# User-specific runtime state and machine paths
+account_status.json
+ui_settings.json
+cfg.txt
+
+# Local OCR models
+modle/
+
+# Runtime logs and diagnostic screenshots
+*.log
+screenshot.png
+startup_recovery_screenshots/
+task_timeout_recovery_screenshots/
+**/error_screenshots/
+
+# Temporary files written by atomic JSON saves
+*.tmp

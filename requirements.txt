@@ -1,0 +1,10 @@
+flet==0.86.1
+flet-desktop==0.86.1
+setuptools==75.8.0
+
+numpy==1.26.4
+opencv-python==4.11.0.86
+opencv-contrib-python==4.10.0.84
+
+paddleocr==2.8.1
+paddlepaddle-gpu==2.6.2
