@@ -13,7 +13,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Callable, Optional
 
-from Core.task_logging import TaskLogger
+from Core.logging import TaskLogger
 
 
 LOGGER = TaskLogger("中控")
@@ -30,8 +30,8 @@ HEART_TEAM_BATTLES_COMPLETED_CLEANUP_FAILED = (
 )
 
 MODULE_PATHS = {
-    "startup_recovery": HELPER_DIR / "Core" / "startup_recovery.py",
-    "task_timeout_recovery": HELPER_DIR / "Core" / "task_timeout_recovery.py",
+    "startup_recovery": HELPER_DIR / "Core" / "startup.py",
+    "task_timeout_recovery": HELPER_DIR / "Core" / "recovery.py",
     "switch": HELPER_DIR / "Sign_A_Switch" / "Switch.py",
     "sign": HELPER_DIR / "Sign_A_Switch" / "Sign.py",
     "mail_collected": DAILY_TASKS_DIR / "Mail" / "Mail.py",

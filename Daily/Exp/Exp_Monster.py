@@ -1,7 +1,7 @@
 """阴阳师日常任务：加入经验妖怪队伍并进入战斗。
 
 界面和模板均以 1280x720 分辨率制作。截图由 MoYomi/Core 中的
-``game_automation.py`` 提供，并统一限制为每 0.5 秒一帧。
+``automation.py`` 提供，并统一限制为每 0.5 秒一帧。
 """
 
 from __future__ import annotations
@@ -20,16 +20,16 @@ PROJECT_ROOT = SCRIPT_DIR.parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from Core import game_automation as utils
-from Core.menu_fallback import try_open_activity_menu_once
-from Core.task_logging import TaskLogger
+from Core import automation as utils
+from Core.menu import try_open_activity_menu_once
+from Core.logging import TaskLogger
 
 
 LOGGER = TaskLogger("经验妖怪")
 print = LOGGER.legacy_print
 
 
-# game_automation.take_screenshot() 会根据这个配置自动限速。
+# automation.take_screenshot() 会根据这个配置自动限速。
 SCREENSHOT_INTERVAL = 0.5
 utils.config["screenshot_speed"] = SCREENSHOT_INTERVAL
 

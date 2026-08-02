@@ -25,6 +25,7 @@ if str(HELPER_DIR) not in sys.path:
     sys.path.insert(0, str(HELPER_DIR))
 
 import main as controller
+from Core.appearance import DEFAULT_ACCENT, extract_monet_palette
 
 
 SETTINGS_PATH = HELPER_DIR / "ui_settings.json"
@@ -63,6 +64,13 @@ DEFAULT_SETTINGS = {
     "mumu_index": None,
     "adb_port": None,
     "secret_battle_attempts": 0,
+    "wallpaper_path": "",
+    "wallpaper_opacity": 0.46,
+    "wallpaper_blur": 4.0,
+    "wallpaper_fit": "cover",
+    "monet_enabled": True,
+    "monet_palette": {},
+    "hide_unavailable_tasks": False,
 }
 
 COLORS = {
@@ -202,6 +210,25 @@ def load_ui_settings(path: Path = SETTINGS_PATH) -> dict[str, Any]:
         return dict(DEFAULT_SETTINGS)
     settings["adb_path"] = str(settings.get("adb_path") or DEFAULT_ADB_PATH)
     settings["mumu_path"] = str(settings.get("mumu_path") or DEFAULT_MUMU_PATH)
+    settings["wallpaper_path"] = str(settings.get("wallpaper_path") or "")
+    try:
+        settings["wallpaper_opacity"] = min(
+            1.0, max(0.0, float(settings.get("wallpaper_opacity", 0.46)))
+        )
+        settings["wallpaper_blur"] = min(
+            30.0, max(0.0, float(settings.get("wallpaper_blur", 4.0)))
+        )
+    except (TypeError, ValueError):
+        settings["wallpaper_opacity"] = 0.46
+        settings["wallpaper_blur"] = 4.0
+    if settings.get("wallpaper_fit") not in {"none", "fill", "contain", "cover"}:
+        settings["wallpaper_fit"] = "cover"
+    settings["monet_enabled"] = bool(settings.get("monet_enabled", True))
+    settings["hide_unavailable_tasks"] = bool(
+        settings.get("hide_unavailable_tasks", False)
+    )
+    if not isinstance(settings.get("monet_palette"), dict):
+        settings["monet_palette"] = {}
     return settings
 
 
@@ -507,18 +534,14 @@ class AccountCardView:
                 tight=True,
             ),
         )
-        task_rows = []
-        task_names = list(UI_TASK_ORDER)
-        for index in range(0, len(task_names), 2):
-            controls = [
-                self.task_views[name].control
-                for name in task_names[index : index + 2]
-            ]
-            for control in controls:
-                control.expand = True
-            if len(controls) == 1:
-                controls.append(ft.Container(expand=True))
-            task_rows.append(ft.Row(controls, spacing=8))
+        task_grid = ft.ResponsiveRow(
+            [self.task_views[name].control for name in UI_TASK_ORDER],
+            columns=12,
+            spacing=8,
+            run_spacing=8,
+        )
+        for control in task_grid.controls:
+            control.col = 6
 
         self.control = ft.Container(
             col={"xs": 12, "sm": 6, "md": 4},
@@ -562,7 +585,7 @@ class AccountCardView:
                         vertical_alignment=ft.CrossAxisAlignment.CENTER,
                     ),
                     ft.Divider(height=4, color="transparent"),
-                    *task_rows,
+                    task_grid,
                 ],
                 spacing=8,
             ),
@@ -593,11 +616,20 @@ class AssistantDashboard:
     def __init__(self, page: ft.Page) -> None:
         self.page = page
         self.settings = load_ui_settings()
+        saved_palette = self.settings.get("monet_palette", {})
+        if self.settings.get("monet_enabled") and saved_palette:
+            COLORS["active"] = str(saved_palette.get("primary", DEFAULT_ACCENT))
+            COLORS["panel"] = str(saved_palette.get("surface", COLORS["panel"]))
+            COLORS["panel_alt"] = str(
+                saved_palette.get("surface_variant", COLORS["panel_alt"])
+            )
+            COLORS["border"] = str(saved_palette.get("outline", COLORS["border"]))
         self.stop_event = threading.Event()
         self.tool_stop_event = threading.Event()
         self.running = False
         self.tool_running = False
         self.active_section = "daily"
+        self.active_settings_section = "global"
         self.active_tool = "story_skip"
         self.current_key: Optional[tuple[str, str]] = None
         self.cards: dict[tuple[str, str], AccountCardView] = {}
@@ -605,6 +637,7 @@ class AssistantDashboard:
         self.tool_log_sequence = 0
         self.nav_items: dict[str, ft.Container] = {}
         self.tool_nav_items: dict[str, ft.Container] = {}
+        self.settings_nav_items: dict[str, ft.Container] = {}
 
         self.page.title = "阴阳师小助手"
         self.page.theme_mode = ft.ThemeMode.DARK
@@ -652,6 +685,12 @@ class AssistantDashboard:
             tooltip="重新读取账号状态",
             on_click=self.refresh_status,
         )
+        self.hide_unavailable_tasks = ft.Switch(
+            label="隐藏不可用任务",
+            value=bool(self.settings.get("hide_unavailable_tasks", False)),
+            active_color=COLORS["active"],
+            on_change=self._on_hide_unavailable_changed,
+        )
 
         self.cards_grid = ft.ResponsiveRow(
             expand=True,
@@ -662,8 +701,13 @@ class AssistantDashboard:
         )
         self.adb_file_picker = ft.FilePicker()
         self.mumu_directory_picker = ft.FilePicker()
+        self.wallpaper_file_picker = ft.FilePicker()
         self.page.services.extend(
-            [self.adb_file_picker, self.mumu_directory_picker]
+            [
+                self.adb_file_picker,
+                self.mumu_directory_picker,
+                self.wallpaper_file_picker,
+            ]
         )
         self.adb_path_field = ft.TextField(
             label="ADB 路径",
@@ -798,6 +842,70 @@ class AssistantDashboard:
             self.log_max_lines,
         ]
         self.settings_message = ft.Text(size=11, color=COLORS["muted"])
+        self.wallpaper_path_field = ft.TextField(
+            label="壁纸图片",
+            value=str(self.settings.get("wallpaper_path", "")),
+            hint_text="选择 PNG、JPG、JPEG、WebP 或 BMP 图片",
+            read_only=True,
+            border_radius=10,
+            dense=True,
+            expand=True,
+        )
+        self.wallpaper_path_button = ft.IconButton(
+            icon=ft.Icons.FOLDER_OPEN_ROUNDED,
+            tooltip="选择壁纸图片",
+            on_click=self.pick_wallpaper_path,
+        )
+        self.wallpaper_opacity = ft.Slider(
+            min=0,
+            max=100,
+            divisions=100,
+            value=float(self.settings.get("wallpaper_opacity", 0.46)) * 100,
+            label="{value}%",
+            active_color=COLORS["active"],
+            on_change=self.preview_wallpaper_settings,
+        )
+        self.wallpaper_blur = ft.Slider(
+            min=0,
+            max=30,
+            divisions=30,
+            value=float(self.settings.get("wallpaper_blur", 4.0)),
+            label="{value}px",
+            active_color=COLORS["active"],
+            on_change=self.preview_wallpaper_settings,
+        )
+        self.wallpaper_fit = ft.Dropdown(
+            label="背景填充模式",
+            value=str(self.settings.get("wallpaper_fit", "cover")),
+            options=[
+                ft.DropdownOption(key="none", text="无拉伸"),
+                ft.DropdownOption(key="fill", text="拉伸填充"),
+                ft.DropdownOption(key="contain", text="等比适应"),
+                ft.DropdownOption(key="cover", text="等比适应（裁剪）"),
+            ],
+            dense=True,
+            border_radius=10,
+            on_select=self.preview_wallpaper_settings,
+        )
+        self.monet_enabled = ft.Switch(
+            label="莫奈取色",
+            value=bool(self.settings.get("monet_enabled", True)),
+            active_color=COLORS["active"],
+            on_change=self._on_monet_changed,
+        )
+        self.wallpaper_message = ft.Text(size=11, color=COLORS["muted"])
+        self.monet_palette_row = ft.Row(spacing=8)
+        self._refresh_monet_palette_preview()
+        self.global_setting_controls.extend(
+            [
+                self.wallpaper_path_field,
+                self.wallpaper_path_button,
+                self.wallpaper_opacity,
+                self.wallpaper_blur,
+                self.wallpaper_fit,
+                self.monet_enabled,
+            ]
+        )
         self.task_settings_state: Optional[dict[str, Any]] = None
         self.task_settings_role = ft.Dropdown(
             label="账号 / 系统角色",
@@ -913,7 +1021,7 @@ class AssistantDashboard:
             alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
         )
         return ft.Container(
-            bgcolor=COLORS["panel"],
+            bgcolor=f"#DD{COLORS['panel'].lstrip('#')}",
             border=ft.Border.all(1, COLORS["border"]),
             border_radius=16,
             padding=16,
@@ -930,9 +1038,24 @@ class AssistantDashboard:
         )
 
     def _build_layout(self) -> ft.Control:
+        wallpaper_path = str(self.settings.get("wallpaper_path", ""))
+        wallpaper_file = Path(wallpaper_path)
+        self.wallpaper_image = ft.Image(
+            src=wallpaper_file.read_bytes() if wallpaper_file.is_file() else b"",
+            fit=self._wallpaper_box_fit(),
+            opacity=float(self.settings.get("wallpaper_opacity", 0.46)),
+            visible=bool(wallpaper_path and wallpaper_file.is_file()),
+            expand=True,
+        )
+        self.wallpaper_blur_layer = ft.Container(
+            blur=float(self.settings.get("wallpaper_blur", 4.0)),
+            visible=self.wallpaper_image.visible,
+            expand=True,
+            ignore_interactions=True,
+        )
         header = ft.Container(
             padding=ft.Padding.symmetric(horizontal=24, vertical=14),
-            bgcolor="#0D1422",
+            bgcolor="#E60D1422",
             border=ft.Border(bottom=ft.BorderSide(1, COLORS["border"])),
             content=ft.Row(
                 [
@@ -984,9 +1107,14 @@ class AssistantDashboard:
         navigation = self._build_navigation()
         self._apply_navigation_style()
 
-        return ft.Column(
+        foreground = ft.Column(
             [header, navigation, self.content_host],
             spacing=0,
+            expand=True,
+        )
+        return ft.Stack(
+            [self.wallpaper_image, self.wallpaper_blur_layer, foreground],
+            fit=ft.StackFit.EXPAND,
             expand=True,
         )
 
@@ -1017,7 +1145,7 @@ class AssistantDashboard:
             self.nav_items[key] = item
             controls.append(item)
         return ft.Container(
-            bgcolor="#111827",
+            bgcolor="#E6111827",
             border=ft.Border(bottom=ft.BorderSide(1, COLORS["border"])),
             content=ft.Row(controls, spacing=0),
         )
@@ -1054,8 +1182,12 @@ class AssistantDashboard:
             expand=True,
             subtitle=self.summary_text,
             actions=ft.Row(
-                [self.refresh_button, self.start_button],
-                spacing=8,
+                [
+                    self.hide_unavailable_tasks,
+                    self.refresh_button,
+                    self.start_button,
+                ],
+                spacing=10,
             ),
         )
         log_panel = self._panel(
@@ -1171,6 +1303,84 @@ class AssistantDashboard:
         return ft.Column([selector, content], spacing=14, expand=True)
 
     def _build_settings_page(self) -> ft.Control:
+        self.settings_sections = {
+            "global": self._build_global_settings_panel(),
+            "tasks": self._build_task_settings_panel(),
+            "wallpaper": self._build_wallpaper_settings_panel(),
+        }
+        self.settings_content_host = ft.Container(
+            content=self.settings_sections[self.active_settings_section],
+            expand=True,
+        )
+        return ft.Row(
+            [
+                self._build_settings_navigation(),
+                ft.VerticalDivider(width=1, color=COLORS["border"]),
+                ft.Column(
+                    [self.settings_content_host],
+                    expand=True,
+                    scroll=ft.ScrollMode.AUTO,
+                ),
+            ],
+            spacing=14,
+            expand=True,
+            vertical_alignment=ft.CrossAxisAlignment.START,
+        )
+
+    def _build_settings_navigation(self) -> ft.Container:
+        entries = (
+            ("global", "全局设置", ft.Icons.SETTINGS_ROUNDED),
+            ("tasks", "任务设置", ft.Icons.TUNE_ROUNDED),
+            ("wallpaper", "壁纸设置", ft.Icons.WALLPAPER_ROUNDED),
+        )
+        controls: list[ft.Control] = []
+        for key, label, icon in entries:
+            item = ft.Container(
+                data=key,
+                height=48,
+                border_radius=10,
+                padding=ft.Padding.symmetric(horizontal=12),
+                content=ft.Row(
+                    [
+                        ft.Icon(icon, size=19),
+                        ft.Text(label, size=14, weight=ft.FontWeight.W_600),
+                    ],
+                    spacing=10,
+                ),
+                on_click=self._on_settings_navigation_click,
+            )
+            self.settings_nav_items[key] = item
+            controls.append(item)
+        self._apply_settings_navigation_style()
+        return ft.Container(
+            width=210,
+            padding=10,
+            bgcolor="#C9111827",
+            border=ft.Border.all(1, COLORS["border"]),
+            border_radius=14,
+            content=ft.Column(controls, spacing=4),
+        )
+
+    def _apply_settings_navigation_style(self) -> None:
+        for key, item in self.settings_nav_items.items():
+            selected = key == self.active_settings_section
+            item.bgcolor = COLORS["active_bg"] if selected else "transparent"
+            item.border = ft.Border.all(
+                1, COLORS["active"] if selected else "transparent"
+            )
+            for control in item.content.controls:
+                control.color = COLORS["active"] if selected else COLORS["text"]
+
+    def _on_settings_navigation_click(self, event: Any) -> None:
+        section = str(event.control.data)
+        if section not in self.settings_sections:
+            return
+        self.active_settings_section = section
+        self.settings_content_host.content = self.settings_sections[section]
+        self._apply_settings_navigation_style()
+        self._safe_update()
+
+    def _build_global_settings_panel(self) -> ft.Control:
         settings_content = ft.Column(
             [
                 ft.Text("运行路径", size=12, weight=ft.FontWeight.BOLD),
@@ -1231,15 +1441,14 @@ class AssistantDashboard:
                 ),
             ],
             spacing=8,
-            expand=True,
-            scroll=ft.ScrollMode.AUTO,
         )
-        settings_panel = self._panel(
+        return self._panel(
             "全局设置",
             ft.Icons.SETTINGS_ROUNDED,
             settings_content,
         )
 
+    def _build_task_settings_panel(self) -> ft.Control:
         task_checks = ft.ResponsiveRow(
             [
                 ft.Container(
@@ -1299,7 +1508,7 @@ class AssistantDashboard:
             ],
             spacing=8,
         )
-        task_settings_panel = self._panel(
+        return self._panel(
             "任务设置",
             ft.Icons.TUNE_ROUNDED,
             task_settings_content,
@@ -1310,14 +1519,58 @@ class AssistantDashboard:
                 on_click=self.refresh_task_settings,
             ),
         )
-        return ft.Row(
+
+    def _build_wallpaper_settings_panel(self) -> ft.Control:
+        content = ft.Column(
             [
-                ft.Container(settings_panel, expand=True),
-                ft.Container(task_settings_panel, expand=True),
+                ft.Text("背景图片", size=12, weight=ft.FontWeight.BOLD),
+                ft.Row(
+                    [self.wallpaper_path_field, self.wallpaper_path_button],
+                    spacing=4,
+                ),
+                ft.Text("背景不透明度", size=12, color=COLORS["muted"]),
+                self.wallpaper_opacity,
+                ft.Text("背景模糊半径", size=12, color=COLORS["muted"]),
+                self.wallpaper_blur,
+                self.wallpaper_fit,
+                ft.Divider(height=10, color=COLORS["border"]),
+                self.monet_enabled,
+                ft.Text(
+                    "开启后会从壁纸提取主色，生成界面强调色和深色表面色。",
+                    size=11,
+                    color=COLORS["muted"],
+                ),
+                self.monet_palette_row,
+                ft.Row(
+                    [
+                        ft.Button(
+                            content="清除壁纸",
+                            icon=ft.Icons.DELETE_OUTLINE_ROUNDED,
+                            on_click=self.clear_wallpaper,
+                        ),
+                        ft.Row(
+                            [
+                                self.wallpaper_message,
+                                ft.Button(
+                                    content="保存壁纸设置",
+                                    icon=ft.Icons.SAVE_ROUNDED,
+                                    bgcolor=COLORS["active"],
+                                    color="#07111F",
+                                    on_click=self.save_wallpaper_settings,
+                                ),
+                            ],
+                            spacing=10,
+                        ),
+                    ],
+                    alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
+                ),
             ],
-            spacing=14,
-            expand=True,
-            vertical_alignment=ft.CrossAxisAlignment.START,
+            spacing=10,
+        )
+        return self._panel(
+            "壁纸设置",
+            ft.Icons.WALLPAPER_ROUNDED,
+            content,
         )
 
     @staticmethod
@@ -1649,26 +1902,217 @@ class AssistantDashboard:
         now = datetime.now().astimezone()
         self.cards.clear()
         self.cards_grid.controls.clear()
-        due_systems = 0
-        total_systems = 0
         for account, account_state in state["accounts"].items():
             for system, system_state in account_state["systems"].items():
                 card = AccountCardView(account, system, system_state, now)
                 self.cards[(account, system)] = card
                 self.cards_grid.controls.append(card.control)
-                total_systems += 1
-                if any(view.status == "pending" for view in card.task_views.values()):
-                    due_systems += 1
-        self.summary_text.value = f"{total_systems} 个角色 · {due_systems} 个待执行"
+        self._apply_task_visibility()
+        self._refresh_task_summary()
         if update:
             self._safe_update()
         return True
+
+    def _refresh_task_summary(self) -> None:
+        unfinished_statuses = {"pending", "active", "warning", "error"}
+        due_systems = sum(
+            any(
+                view.status in unfinished_statuses
+                for view in card.task_views.values()
+            )
+            for card in self.cards.values()
+        )
+        self.summary_text.value = (
+            f"{len(self.cards)} 个角色 · {due_systems} 个待执行"
+        )
 
     def refresh_status(self, _event: Any = None) -> None:
         if self.running:
             return
         if self.refresh_cards():
             self.append_log("INFO", "已重新读取 account_status.json")
+
+    def _apply_task_visibility(self) -> None:
+        hide_unavailable = bool(self.hide_unavailable_tasks.value)
+        for card in self.cards.values():
+            for task_view in card.task_views.values():
+                task_view.control.visible = not (
+                    hide_unavailable
+                    and task_view.status in {"unavailable", "disabled"}
+                )
+
+    def _on_hide_unavailable_changed(self, _event: Any = None) -> None:
+        self._apply_task_visibility()
+        self.settings["hide_unavailable_tasks"] = bool(
+            self.hide_unavailable_tasks.value
+        )
+        try:
+            save_ui_settings(self.settings)
+        except OSError as exc:
+            self.append_log("ERROR", f"保存任务显示设置失败：{exc}")
+        self._safe_update()
+
+    def _wallpaper_box_fit(self) -> ft.BoxFit:
+        value = (
+            str(self.wallpaper_fit.value)
+            if hasattr(self, "wallpaper_fit")
+            else str(self.settings.get("wallpaper_fit", "cover"))
+        )
+        return {
+            "none": ft.BoxFit.NONE,
+            "contain": ft.BoxFit.CONTAIN,
+            "fill": ft.BoxFit.FILL,
+        }.get(value, ft.BoxFit.COVER)
+
+    def _refresh_monet_palette_preview(self) -> None:
+        palette = self.settings.get("monet_palette", {})
+        colors = [
+            str(palette.get(name))
+            for name in ("primary", "secondary", "surface_variant", "outline")
+            if palette.get(name)
+        ]
+        self.monet_palette_row.controls = [
+            ft.Container(
+                width=28,
+                height=28,
+                border_radius=8,
+                bgcolor=color,
+                border=ft.Border.all(1, "#66FFFFFF"),
+                tooltip=color,
+            )
+            for color in colors
+        ]
+        self.monet_palette_row.visible = bool(colors)
+
+    def _apply_monet_palette(self, palette: dict[str, str]) -> None:
+        if not palette:
+            return
+        COLORS["active"] = str(palette.get("primary", DEFAULT_ACCENT))
+        COLORS["panel"] = str(palette.get("surface", COLORS["panel"]))
+        COLORS["panel_alt"] = str(
+            palette.get("surface_variant", COLORS["panel_alt"])
+        )
+        COLORS["border"] = str(palette.get("outline", COLORS["border"]))
+        self.page.theme = ft.Theme(
+            font_family="Microsoft YaHei UI",
+            color_scheme_seed=COLORS["active"],
+        )
+        self.wallpaper_opacity.active_color = COLORS["active"]
+        self.wallpaper_blur.active_color = COLORS["active"]
+        self.monet_enabled.active_color = COLORS["active"]
+        self.hide_unavailable_tasks.active_color = COLORS["active"]
+        self.start_button.bgcolor = COLORS["active"]
+        self.tool_start_button.bgcolor = COLORS["active"]
+        self._apply_navigation_style()
+        self._apply_settings_navigation_style()
+
+    async def pick_wallpaper_path(self, _event: Any = None) -> None:
+        current = Path(str(self.wallpaper_path_field.value or "")).expanduser()
+        initial_directory = current.parent if current.parent.is_dir() else None
+        selected = await self.wallpaper_file_picker.pick_files(
+            dialog_title="选择壁纸图片",
+            initial_directory=(str(initial_directory) if initial_directory else None),
+            file_type=ft.FilePickerFileType.CUSTOM,
+            allowed_extensions=["png", "jpg", "jpeg", "webp", "bmp"],
+            allow_multiple=False,
+        )
+        if not selected or not selected[0].path:
+            return
+        self.wallpaper_path_field.value = selected[0].path
+        self.wallpaper_message.value = "预览中，保存后保留"
+        self.wallpaper_message.color = COLORS["warning"]
+        if self.monet_enabled.value:
+            try:
+                palette = extract_monet_palette(selected[0].path)
+                self.settings["monet_palette"] = palette
+                self._apply_monet_palette(palette)
+                self._refresh_monet_palette_preview()
+            except (OSError, ValueError) as exc:
+                self.wallpaper_message.value = f"取色失败：{exc}"
+                self.wallpaper_message.color = COLORS["error"]
+        self.preview_wallpaper_settings()
+
+    def preview_wallpaper_settings(self, _event: Any = None) -> None:
+        if not hasattr(self, "wallpaper_image"):
+            return
+        path = str(self.wallpaper_path_field.value or "")
+        wallpaper_file = Path(path)
+        visible = bool(path and wallpaper_file.is_file())
+        self.wallpaper_image.src = wallpaper_file.read_bytes() if visible else b""
+        self.wallpaper_image.visible = visible
+        self.wallpaper_image.opacity = float(self.wallpaper_opacity.value or 0) / 100.0
+        self.wallpaper_image.fit = self._wallpaper_box_fit()
+        self.wallpaper_blur_layer.blur = float(self.wallpaper_blur.value or 0)
+        self.wallpaper_blur_layer.visible = visible
+        self._safe_update()
+
+    def _on_monet_changed(self, _event: Any = None) -> None:
+        path = str(self.wallpaper_path_field.value or "")
+        if self.monet_enabled.value and path and Path(path).is_file():
+            try:
+                palette = extract_monet_palette(path)
+                self.settings["monet_palette"] = palette
+                self._apply_monet_palette(palette)
+                self._refresh_monet_palette_preview()
+                self.wallpaper_message.value = "已自动从壁纸取色"
+                self.wallpaper_message.color = COLORS["done"]
+            except (OSError, ValueError) as exc:
+                self.wallpaper_message.value = f"取色失败：{exc}"
+                self.wallpaper_message.color = COLORS["error"]
+        elif not self.monet_enabled.value:
+            self.settings["monet_palette"] = {}
+            self._refresh_monet_palette_preview()
+        self.preview_wallpaper_settings()
+
+    def clear_wallpaper(self, _event: Any = None) -> None:
+        self.wallpaper_path_field.value = ""
+        self.settings["monet_palette"] = {}
+        self._refresh_monet_palette_preview()
+        self.wallpaper_message.value = "壁纸已从预览移除，点击保存后生效"
+        self.wallpaper_message.color = COLORS["warning"]
+        self.preview_wallpaper_settings()
+
+    def save_wallpaper_settings(self, _event: Any = None) -> bool:
+        path = str(self.wallpaper_path_field.value or "").strip()
+        if path and not Path(path).is_file():
+            self.wallpaper_message.value = "请选择有效的图片文件"
+            self.wallpaper_message.color = COLORS["error"]
+            self._safe_update()
+            return False
+        palette: dict[str, str] = {}
+        if path and self.monet_enabled.value:
+            try:
+                palette = extract_monet_palette(path)
+            except (OSError, ValueError) as exc:
+                self.wallpaper_message.value = f"取色失败：{exc}"
+                self.wallpaper_message.color = COLORS["error"]
+                self._safe_update()
+                return False
+        self.settings.update(
+            {
+                "wallpaper_path": path,
+                "wallpaper_opacity": float(self.wallpaper_opacity.value or 0) / 100.0,
+                "wallpaper_blur": float(self.wallpaper_blur.value or 0),
+                "wallpaper_fit": str(self.wallpaper_fit.value or "cover"),
+                "monet_enabled": bool(self.monet_enabled.value),
+                "monet_palette": palette,
+            }
+        )
+        try:
+            save_ui_settings(self.settings)
+        except OSError as exc:
+            self.wallpaper_message.value = f"保存失败：{exc}"
+            self.wallpaper_message.color = COLORS["error"]
+            self._safe_update()
+            return False
+        if palette:
+            self._apply_monet_palette(palette)
+        self._refresh_monet_palette_preview()
+        self.preview_wallpaper_settings()
+        self.wallpaper_message.value = "已保存"
+        self.wallpaper_message.color = COLORS["done"]
+        self._safe_update()
+        return True
 
     async def pick_adb_path(self, _event: Any = None) -> None:
         current = Path(str(self.adb_path_field.value or DEFAULT_ADB_PATH))
@@ -1869,6 +2313,13 @@ class AssistantDashboard:
             "mumu_index": selected_mumu["index"],
             "adb_port": selected_mumu["adb_port"],
             "secret_battle_attempts": secret_attempts,
+            "wallpaper_path": str(self.wallpaper_path_field.value or ""),
+            "wallpaper_opacity": float(self.wallpaper_opacity.value or 0) / 100.0,
+            "wallpaper_blur": float(self.wallpaper_blur.value or 0),
+            "wallpaper_fit": str(self.wallpaper_fit.value or "cover"),
+            "monet_enabled": bool(self.monet_enabled.value),
+            "monet_palette": dict(self.settings.get("monet_palette", {})),
+            "hide_unavailable_tasks": bool(self.hide_unavailable_tasks.value),
         }
 
     def save_settings(self, _event: Any = None) -> bool:
@@ -1971,18 +2422,18 @@ class AssistantDashboard:
         success = False
         previous_interval: Optional[float] = None
         try:
-            from Core import game_automation
+            from Core import automation
 
-            game_automation.configure_runtime_paths(
+            automation.configure_runtime_paths(
                 str(self.settings["adb_path"]),
                 str(self.settings["mumu_path"]),
             )
-            if not game_automation.configure_mumu_target(
+            if not automation.configure_mumu_target(
                 str(self.settings["adb_port"]),
                 str(self.settings["mumu_index"]),
             ):
                 raise OSError(f"无法连接 MuMu ADB：{self.settings['adb_port']}")
-            previous_interval = game_automation.config.get("screenshot_speed", 0.5)
+            previous_interval = automation.config.get("screenshot_speed", 0.5)
             module = self._load_tool_module(tool_name)
             battle_interval = float(self.settings["battle_detection_interval"])
             if hasattr(module, "BATTLE_SCREENSHOT_INTERVAL"):
@@ -2010,9 +2461,9 @@ class AssistantDashboard:
         finally:
             if previous_interval is not None:
                 try:
-                    from Core import game_automation
+                    from Core import automation
 
-                    game_automation.config["screenshot_speed"] = previous_interval
+                    automation.config["screenshot_speed"] = previous_interval
                 except Exception:
                     pass
             writer.flush()
@@ -2221,6 +2672,8 @@ class AssistantDashboard:
             self._append_log_now("ERROR", message)
         elif event_type == "controller_stopped" and card is not None:
             card.set_phase("warning", "已安全停止")
+        self._apply_task_visibility()
+        self._refresh_task_summary()
 
 
 def main(page: ft.Page) -> None:

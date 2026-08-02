@@ -24,9 +24,9 @@ PROJECT_ROOT = SCRIPT_DIR.parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from Core import game_automation as utils
-from Core.menu_fallback import try_open_activity_menu_once
-from Core.task_logging import TaskLogger
+from Core import automation as utils
+from Core.menu import try_open_activity_menu_once
+from Core.logging import TaskLogger
 
 
 LOGGER = TaskLogger("同心队")
@@ -111,7 +111,7 @@ RETURN_WAIT_SECONDS = 30.0
 EXIT_TEAM_CLICK_ATTEMPTS = 3
 EXIT_TEAM_CONFIRM_APPEAR_SECONDS = 4.0
 EXIT_TEAM_CENTER_JITTER = 4
-MONDAY_THURSDAY_BATTLE_COUNT = 20
+MONDAY_THURSDAY_BATTLE_COUNT = 17
 FRIDAY_SUNDAY_BATTLE_COUNT = 30
 VICTORY_TRANSITION_CLICK_AREA = (1030, 540, 1250, 700)
 VICTORY_TRANSITION_CLICK_COUNT = (2, 3)
