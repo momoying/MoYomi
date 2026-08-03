@@ -62,6 +62,10 @@ Rect = Tuple[int, int, int, int]
 
 FRIEND_HEADER_CLICK_REGION: Rect = (320, 155, 490, 195)
 CROSS_REGION_HEADER_CLICK_REGION: Rect = (320, 575, 490, 615)
+CROSS_REGION_FRIEND_CLICK_REGIONS: Tuple[Rect, Rect] = (
+    (340, 260, 440, 315),
+    (340, 350, 440, 405),
+)
 
 
 def _threshold(name: str) -> float:
@@ -317,9 +321,25 @@ def _switch_category(target: str) -> bool:
     return False
 
 
-def _like_current_category(category: str) -> bool:
+def _like_cross_region_friends() -> bool:
+    """按列表顺序选择并点赞两位跨区好友。"""
+    for index, click_region in enumerate(CROSS_REGION_FRIEND_CLICK_REGIONS, start=1):
+        label = f"选择第 {index} 位跨区好友"
+        _click_region(click_region, label)
+        print(f"已点击第 {index} 位跨区好友")
+
+        # 等待右侧好友资料和点赞状态完成切换，避免误读上一位的 Liked。
+        time.sleep(1.0)
+        if not _like_current_category("cross_region", friend_number=index):
+            return False
+    return True
+
+
+def _like_current_category(category: str, friend_number: Optional[int] = None) -> bool:
     """处理当前栏的点赞；红色 Liked 表示已经点过并直接跳过。"""
     category_label = "好友" if category == "friend" else "跨区好友"
+    if friend_number is not None:
+        category_label = f"{category_label}第 {friend_number} 位"
     deadline = time.monotonic() + LIKE_WAIT_SECONDS
     last_frame = None
     best_like_score: Optional[float] = None
@@ -435,7 +455,11 @@ def run() -> bool:
     for index, category in enumerate((first_category, second_category)):
         if index > 0 and not _switch_category(category):
             return False
-        if not _like_current_category(category):
+        if category == "cross_region":
+            liked = _like_cross_region_friends()
+        else:
+            liked = _like_current_category(category)
+        if not liked:
             return False
 
     if not _wait_and_click("back", "返回", BACK_WAIT_SECONDS):

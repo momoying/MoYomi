@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any, Callable, Optional
 
 from Core.logging import TaskLogger
+from Core.notifications import maybe_send_detection_summary
 
 
 LOGGER = TaskLogger("中控")
@@ -1022,6 +1023,29 @@ def run(
         save_state(state, status_path)
         print("账号状态 JSON 已迁移为 v4 同心队状态结构")
 
+    notification_finished = False
+
+    def try_detection_notification(at: datetime) -> None:
+        nonlocal notification_finished
+        if notification_finished:
+            return
+        result = maybe_send_detection_summary(
+            state,
+            at,
+            enabled=bool(
+                runtime_settings
+                and runtime_settings.get("serverchan_enabled", False)
+            ),
+        )
+        if result.status == "sent":
+            print(f"[SUCCESS] {result.message}")
+            notification_finished = True
+        elif result.status in {"missing_key", "error"}:
+            print(f"[WARN] {result.message}")
+            notification_finished = True
+        elif result.status == "already_sent":
+            notification_finished = True
+
     queue_time = now_provider()
     work_queue = build_work_queue(state, queue_time)
     _emit_event(
@@ -1032,6 +1056,7 @@ def run(
     )
     if not work_queue:
         print("当前没有到期任务，无需登录任何账号")
+        try_detection_notification(now_provider())
         _emit_event(event_callback, "controller_completed", empty=True)
         return True
 
@@ -1156,6 +1181,7 @@ def run(
                     result=MERCHANT_SKIPPED_RESULT,
                     skipped=True,
                 )
+                try_detection_notification(now_provider())
                 continue
             active_tasks.append(task_work)
 
@@ -1360,6 +1386,8 @@ def run(
                 detail=detail,
                 result=task_result,
             )
+            if task_name in {BOUNTY_TASK, MERCHANT_TASK}:
+                try_detection_notification(now_provider())
 
             if (
                 task_name == HEART_TEAM_TASK
@@ -1437,6 +1465,7 @@ def run(
         first_login = False
 
     print("\n全部账号与系统的到期任务已处理完成")
+    try_detection_notification(now_provider())
     _emit_event(event_callback, "controller_completed", empty=False)
     return True
 

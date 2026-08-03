@@ -17,6 +17,8 @@ DEVELOPMENT_GUIDE.md
 account_status.json
 ui_settings.json
 cfg.txt
+serverchan_notification_state.json
+.env
 
 # Local OCR models
 modle/

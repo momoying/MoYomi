@@ -26,6 +26,11 @@ if str(HELPER_DIR) not in sys.path:
 
 import main as controller
 from Core.appearance import DEFAULT_ACCENT, extract_monet_palette
+from Core.notifications import (
+    clear_project_sendkey,
+    get_serverchan_sendkey,
+    set_project_sendkey,
+)
 
 
 SETTINGS_PATH = HELPER_DIR / "ui_settings.json"
@@ -71,6 +76,7 @@ DEFAULT_SETTINGS = {
     "monet_enabled": True,
     "monet_palette": {},
     "hide_unavailable_tasks": False,
+    "serverchan_enabled": False,
 }
 
 COLORS = {
@@ -91,6 +97,7 @@ COLORS = {
     "warning": "#F6C85F",
     "warning_bg": "#443719",
 }
+BASE_COLORS = dict(COLORS)
 
 TASK_HIGHLIGHT_STYLES = {
     "default": {
@@ -226,6 +233,9 @@ def load_ui_settings(path: Path = SETTINGS_PATH) -> dict[str, Any]:
     settings["monet_enabled"] = bool(settings.get("monet_enabled", True))
     settings["hide_unavailable_tasks"] = bool(
         settings.get("hide_unavailable_tasks", False)
+    )
+    settings["serverchan_enabled"] = bool(
+        settings.get("serverchan_enabled", False)
     )
     if not isinstance(settings.get("monet_palette"), dict):
         settings["monet_palette"] = {}
@@ -617,6 +627,9 @@ class AssistantDashboard:
         self.page = page
         self.settings = load_ui_settings()
         saved_palette = self.settings.get("monet_palette", {})
+        self._monet_palette_path = (
+            str(self.settings.get("wallpaper_path", "")) if saved_palette else ""
+        )
         if self.settings.get("monet_enabled") and saved_palette:
             COLORS["active"] = str(saved_palette.get("primary", DEFAULT_ACCENT))
             COLORS["panel"] = str(saved_palette.get("surface", COLORS["panel"]))
@@ -639,7 +652,7 @@ class AssistantDashboard:
         self.tool_nav_items: dict[str, ft.Container] = {}
         self.settings_nav_items: dict[str, ft.Container] = {}
 
-        self.page.title = "阴阳师小助手"
+        self.page.title = "MoYomi"
         self.page.theme_mode = ft.ThemeMode.DARK
         self.page.bgcolor = COLORS["page"]
         self.page.padding = 0
@@ -686,9 +699,10 @@ class AssistantDashboard:
             on_click=self.refresh_status,
         )
         self.hide_unavailable_tasks = ft.Switch(
-            label="隐藏不可用任务",
             value=bool(self.settings.get("hide_unavailable_tasks", False)),
             active_color=COLORS["active"],
+            width=58,
+            height=32,
             on_change=self._on_hide_unavailable_changed,
         )
 
@@ -842,6 +856,37 @@ class AssistantDashboard:
             self.log_max_lines,
         ]
         self.settings_message = ft.Text(size=11, color=COLORS["muted"])
+        self.serverchan_enabled = ft.Switch(
+            label="使用 Server酱 推送",
+            value=bool(self.settings.get("serverchan_enabled", False)),
+            active_color=COLORS["active"],
+            on_change=self._on_serverchan_enabled_changed,
+        )
+        self.serverchan_sendkey = ft.TextField(
+            label="Server酱 SendKey / API",
+            hint_text=(
+                "环境变量已配置；留空不会修改"
+                if get_serverchan_sendkey()
+                else "输入 SendKey 后点击保存 API"
+            ),
+            password=True,
+            can_reveal_password=True,
+            dense=True,
+            border_radius=10,
+            expand=True,
+        )
+        self.serverchan_save_key_button = ft.Button(
+            content="保存 API",
+            icon=ft.Icons.KEY_ROUNDED,
+            on_click=self.save_serverchan_key,
+        )
+        self.serverchan_clear_key_button = ft.Button(
+            content="清除 API",
+            icon=ft.Icons.DELETE_OUTLINE_ROUNDED,
+            on_click=self.clear_serverchan_key,
+        )
+        self.serverchan_status = ft.Text(size=11, color=COLORS["muted"])
+        self._refresh_serverchan_status()
         self.wallpaper_path_field = ft.TextField(
             label="壁纸图片",
             value=str(self.settings.get("wallpaper_path", "")),
@@ -904,6 +949,10 @@ class AssistantDashboard:
                 self.wallpaper_blur,
                 self.wallpaper_fit,
                 self.monet_enabled,
+                self.serverchan_enabled,
+                self.serverchan_sendkey,
+                self.serverchan_save_key_button,
+                self.serverchan_clear_key_button,
             ]
         )
         self.task_settings_state: Optional[dict[str, Any]] = None
@@ -996,6 +1045,8 @@ class AssistantDashboard:
         expand: Any = None,
         subtitle: Optional[ft.Control] = None,
         actions: Optional[ft.Control] = None,
+        heading_extra: Optional[ft.Control] = None,
+        compact_heading: bool = False,
     ) -> ft.Container:
         title_controls: list[ft.Control] = [
             ft.Text(
@@ -1007,14 +1058,18 @@ class AssistantDashboard:
         ]
         if subtitle is not None:
             title_controls.append(subtitle)
+        heading_leading: list[ft.Control] = [
+            ft.Icon(icon, size=18, color=COLORS["active"]),
+            ft.Column(title_controls, spacing=1),
+        ]
+        if heading_extra is not None:
+            heading_leading.append(heading_extra)
         heading = ft.Row(
             [
                 ft.Row(
-                    [
-                        ft.Icon(icon, size=18, color=COLORS["active"]),
-                        ft.Column(title_controls, spacing=1),
-                    ],
-                    spacing=8,
+                    heading_leading,
+                    spacing=10,
+                    vertical_alignment=ft.CrossAxisAlignment.CENTER,
                 ),
                 actions or ft.Container(),
             ],
@@ -1024,16 +1079,23 @@ class AssistantDashboard:
             bgcolor=f"#DD{COLORS['panel'].lstrip('#')}",
             border=ft.Border.all(1, COLORS["border"]),
             border_radius=16,
-            padding=16,
+            padding=(
+                ft.Padding(left=16, top=7, right=16, bottom=16)
+                if compact_heading
+                else 16
+            ),
             expand=expand,
             content=ft.Column(
                 [
                     heading,
-                    ft.Divider(height=10, color=COLORS["border"]),
+                    ft.Divider(
+                        height=2 if compact_heading else 10,
+                        color=COLORS["border"],
+                    ),
                     content,
                 ],
                 expand=True,
-                spacing=8,
+                spacing=3 if compact_heading else 8,
             ),
         )
 
@@ -1072,13 +1134,13 @@ class AssistantDashboard:
                             ft.Column(
                                 [
                                     ft.Text(
-                                        "阴阳师小助手",
+                                        "我要摆烂",
                                         size=20,
                                         weight=ft.FontWeight.BOLD,
                                         color=COLORS["text"],
                                     ),
                                     ft.Text(
-                                        "YYS Helper",
+                                        "MoYomi",
                                         size=11,
                                         color=COLORS["muted"],
                                     ),
@@ -1175,15 +1237,38 @@ class AssistantDashboard:
             self._safe_update()
 
     def _build_daily_page(self) -> ft.Control:
+        task_filter = ft.Row(
+            [
+                ft.Container(width=1, height=46, bgcolor=COLORS["border"]),
+                ft.Column(
+                    [
+                        ft.Text(
+                            "隐藏不可用任务",
+                            size=12,
+                            color=COLORS["muted"],
+                            text_align=ft.TextAlign.CENTER,
+                        ),
+                        self.hide_unavailable_tasks,
+                    ],
+                    spacing=1,
+                    tight=True,
+                    horizontal_alignment=ft.CrossAxisAlignment.CENTER,
+                ),
+            ],
+            spacing=8,
+            tight=True,
+            vertical_alignment=ft.CrossAxisAlignment.CENTER,
+        )
         accounts_panel = self._panel(
             "账号 / 角色状态",
             ft.Icons.GROUP_ROUNDED,
             self.cards_grid,
             expand=True,
             subtitle=self.summary_text,
+            heading_extra=task_filter,
+            compact_heading=True,
             actions=ft.Row(
                 [
-                    self.hide_unavailable_tasks,
                     self.refresh_button,
                     self.start_button,
                 ],
@@ -1423,6 +1508,28 @@ class AssistantDashboard:
                     ],
                     spacing=8,
                 ),
+                ft.Text(
+                    "截图保留数量填 0 表示不保留；任务恢复重试次数填 0 表示失败后不恢复。",
+                    size=11,
+                    color=COLORS["muted"],
+                ),
+                ft.Divider(height=10, color=COLORS["border"]),
+                ft.Text("推送设置", size=12, weight=ft.FontWeight.BOLD),
+                self.serverchan_enabled,
+                ft.Row(
+                    [
+                        self.serverchan_sendkey,
+                        self.serverchan_save_key_button,
+                        self.serverchan_clear_key_button,
+                    ],
+                    spacing=8,
+                ),
+                self.serverchan_status,
+                ft.Text(
+                    "仅在当前检测时段的悬赏与开放的奸商检测全部结束后推送一次；普通任务结束不推送。",
+                    size=11,
+                    color=COLORS["muted"],
+                ),
                 ft.Row(
                     [
                         self.settings_message,
@@ -1433,11 +1540,6 @@ class AssistantDashboard:
                         ),
                     ],
                     alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
-                ),
-                ft.Text(
-                    "截图保留数量填 0 表示不保留；任务恢复重试次数填 0 表示失败后不恢复。",
-                    size=11,
-                    color=COLORS["muted"],
                 ),
             ],
             spacing=8,
@@ -1932,6 +2034,65 @@ class AssistantDashboard:
         if self.refresh_cards():
             self.append_log("INFO", "已重新读取 account_status.json")
 
+    def _refresh_serverchan_status(self) -> None:
+        configured = bool(get_serverchan_sendkey())
+        self.serverchan_status.value = (
+            "SENDKEY 已保存"
+            if configured
+            else "尚未配置。请到 https://sct.ftqq.com 免费获取（每天 5 条额度）"
+        )
+        self.serverchan_status.color = (
+            COLORS["done"] if configured else COLORS["warning"]
+        )
+        self.serverchan_sendkey.hint_text = (
+            "环境变量已配置；留空不会修改"
+            if configured
+            else "输入 SendKey 后点击保存 API"
+        )
+
+    def _on_serverchan_enabled_changed(self, _event: Any = None) -> None:
+        self.settings["serverchan_enabled"] = bool(self.serverchan_enabled.value)
+        self._refresh_serverchan_status()
+        try:
+            save_ui_settings(self.settings)
+        except OSError as exc:
+            self.serverchan_status.value = f"保存推送开关失败：{exc}"
+            self.serverchan_status.color = COLORS["error"]
+        self._safe_update()
+
+    def save_serverchan_key(self, _event: Any = None) -> bool:
+        send_key = str(self.serverchan_sendkey.value or "").strip()
+        if not send_key:
+            self.serverchan_status.value = "请输入 SendKey"
+            self.serverchan_status.color = COLORS["error"]
+            self._safe_update()
+            return False
+        try:
+            set_project_sendkey(send_key)
+        except (OSError, ValueError) as exc:
+            self.serverchan_status.value = f"保存 API 失败：{exc}"
+            self.serverchan_status.color = COLORS["error"]
+            self._safe_update()
+            return False
+        finally:
+            send_key = ""
+        self.serverchan_sendkey.value = ""
+        self._refresh_serverchan_status()
+        self._safe_update()
+        return True
+
+    def clear_serverchan_key(self, _event: Any = None) -> None:
+        try:
+            clear_project_sendkey()
+        except OSError:
+            self.serverchan_status.value = "清除 API 失败，请检查系统权限"
+            self.serverchan_status.color = COLORS["error"]
+            self._safe_update()
+            return
+        self.serverchan_sendkey.value = ""
+        self._refresh_serverchan_status()
+        self._safe_update()
+
     def _apply_task_visibility(self) -> None:
         hide_unavailable = bool(self.hide_unavailable_tasks.value)
         for card in self.cards.values():
@@ -1967,22 +2128,31 @@ class AssistantDashboard:
     def _refresh_monet_palette_preview(self) -> None:
         palette = self.settings.get("monet_palette", {})
         colors = [
-            str(palette.get(name))
-            for name in ("primary", "secondary", "surface_variant", "outline")
-            if palette.get(name)
+            ("主色", str(palette.get("primary"))),
+            ("辅助色", str(palette.get("secondary"))),
+            ("表面色", str(palette.get("surface_variant"))),
+            ("边框色", str(palette.get("outline"))),
         ]
         self.monet_palette_row.controls = [
-            ft.Container(
-                width=28,
-                height=28,
-                border_radius=8,
-                bgcolor=color,
-                border=ft.Border.all(1, "#66FFFFFF"),
-                tooltip=color,
+            ft.Column(
+                [
+                    ft.Container(
+                        width=30,
+                        height=30,
+                        border_radius=8,
+                        bgcolor=color,
+                        border=ft.Border.all(1, "#66FFFFFF"),
+                        tooltip=color,
+                    ),
+                    ft.Text(label, size=10, color=COLORS["muted"]),
+                ],
+                spacing=3,
+                horizontal_alignment=ft.CrossAxisAlignment.CENTER,
             )
-            for color in colors
+            for label, color in colors
+            if color and color != "None"
         ]
-        self.monet_palette_row.visible = bool(colors)
+        self.monet_palette_row.visible = bool(self.monet_palette_row.controls)
 
     def _apply_monet_palette(self, palette: dict[str, str]) -> None:
         if not palette:
@@ -2001,10 +2171,44 @@ class AssistantDashboard:
         self.wallpaper_blur.active_color = COLORS["active"]
         self.monet_enabled.active_color = COLORS["active"]
         self.hide_unavailable_tasks.active_color = COLORS["active"]
+        self.serverchan_enabled.active_color = COLORS["active"]
         self.start_button.bgcolor = COLORS["active"]
         self.tool_start_button.bgcolor = COLORS["active"]
         self._apply_navigation_style()
         self._apply_settings_navigation_style()
+
+    def _apply_default_palette(self) -> None:
+        COLORS.update(BASE_COLORS)
+        self.page.theme = ft.Theme(
+            font_family="Microsoft YaHei UI",
+            color_scheme_seed=COLORS["active"],
+        )
+        self.wallpaper_opacity.active_color = COLORS["active"]
+        self.wallpaper_blur.active_color = COLORS["active"]
+        self.monet_enabled.active_color = COLORS["active"]
+        self.hide_unavailable_tasks.active_color = COLORS["active"]
+        self.serverchan_enabled.active_color = COLORS["active"]
+        self.start_button.bgcolor = COLORS["active"]
+        self.tool_start_button.bgcolor = COLORS["active"]
+
+    def _sync_wallpaper_preview_settings(self) -> None:
+        self.settings.update(
+            {
+                "wallpaper_path": str(self.wallpaper_path_field.value or ""),
+                "wallpaper_opacity": float(self.wallpaper_opacity.value or 0) / 100.0,
+                "wallpaper_blur": float(self.wallpaper_blur.value or 0),
+                "wallpaper_fit": str(self.wallpaper_fit.value or "cover"),
+                "monet_enabled": bool(self.monet_enabled.value),
+            }
+        )
+
+    def _rebuild_theme_layout(self) -> None:
+        if not self.page.controls:
+            return
+        active_section = self.active_section
+        self.refresh_cards(update=False)
+        self.page.controls[0] = self._build_layout()
+        self._show_section(active_section, update=False)
 
     async def pick_wallpaper_path(self, _event: Any = None) -> None:
         current = Path(str(self.wallpaper_path_field.value or "")).expanduser()
@@ -2025,11 +2229,14 @@ class AssistantDashboard:
             try:
                 palette = extract_monet_palette(selected[0].path)
                 self.settings["monet_palette"] = palette
+                self._monet_palette_path = selected[0].path
                 self._apply_monet_palette(palette)
                 self._refresh_monet_palette_preview()
             except (OSError, ValueError) as exc:
                 self.wallpaper_message.value = f"取色失败：{exc}"
                 self.wallpaper_message.color = COLORS["error"]
+        self._sync_wallpaper_preview_settings()
+        self._rebuild_theme_layout()
         self.preview_wallpaper_settings()
 
     def preview_wallpaper_settings(self, _event: Any = None) -> None:
@@ -2050,8 +2257,13 @@ class AssistantDashboard:
         path = str(self.wallpaper_path_field.value or "")
         if self.monet_enabled.value and path and Path(path).is_file():
             try:
-                palette = extract_monet_palette(path)
+                palette = (
+                    dict(self.settings.get("monet_palette", {}))
+                    if self._monet_palette_path == path
+                    else extract_monet_palette(path)
+                )
                 self.settings["monet_palette"] = palette
+                self._monet_palette_path = path
                 self._apply_monet_palette(palette)
                 self._refresh_monet_palette_preview()
                 self.wallpaper_message.value = "已自动从壁纸取色"
@@ -2061,12 +2273,17 @@ class AssistantDashboard:
                 self.wallpaper_message.color = COLORS["error"]
         elif not self.monet_enabled.value:
             self.settings["monet_palette"] = {}
+            self._monet_palette_path = ""
+            self._apply_default_palette()
             self._refresh_monet_palette_preview()
+        self._sync_wallpaper_preview_settings()
+        self._rebuild_theme_layout()
         self.preview_wallpaper_settings()
 
     def clear_wallpaper(self, _event: Any = None) -> None:
         self.wallpaper_path_field.value = ""
         self.settings["monet_palette"] = {}
+        self._monet_palette_path = ""
         self._refresh_monet_palette_preview()
         self.wallpaper_message.value = "壁纸已从预览移除，点击保存后生效"
         self.wallpaper_message.color = COLORS["warning"]
@@ -2082,7 +2299,11 @@ class AssistantDashboard:
         palette: dict[str, str] = {}
         if path and self.monet_enabled.value:
             try:
-                palette = extract_monet_palette(path)
+                palette = (
+                    dict(self.settings.get("monet_palette", {}))
+                    if self._monet_palette_path == path
+                    else extract_monet_palette(path)
+                )
             except (OSError, ValueError) as exc:
                 self.wallpaper_message.value = f"取色失败：{exc}"
                 self.wallpaper_message.color = COLORS["error"]
@@ -2107,7 +2328,10 @@ class AssistantDashboard:
             return False
         if palette:
             self._apply_monet_palette(palette)
+        else:
+            self._apply_default_palette()
         self._refresh_monet_palette_preview()
+        self._rebuild_theme_layout()
         self.preview_wallpaper_settings()
         self.wallpaper_message.value = "已保存"
         self.wallpaper_message.color = COLORS["done"]
@@ -2320,9 +2544,21 @@ class AssistantDashboard:
             "monet_enabled": bool(self.monet_enabled.value),
             "monet_palette": dict(self.settings.get("monet_palette", {})),
             "hide_unavailable_tasks": bool(self.hide_unavailable_tasks.value),
+            "serverchan_enabled": bool(self.serverchan_enabled.value),
         }
 
     def save_settings(self, _event: Any = None) -> bool:
+        if self.serverchan_enabled.value:
+            pending_key = str(self.serverchan_sendkey.value or "").strip()
+            if pending_key and not self.save_serverchan_key():
+                return False
+            if not get_serverchan_sendkey():
+                self.settings_message.value = (
+                    "启用推送前请配置 SERVERCHAN_SENDKEY；可到 https://sct.ftqq.com 免费获取"
+                )
+                self.settings_message.color = COLORS["error"]
+                self._safe_update()
+                return False
         settings = self._read_settings_from_fields()
         if settings is None:
             return False
