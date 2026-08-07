@@ -12,6 +12,7 @@ import re
 import subprocess
 import sys
 import threading
+import traceback
 from contextlib import redirect_stderr, redirect_stdout
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -33,7 +34,8 @@ from Core.notifications import (
 )
 
 
-SETTINGS_PATH = HELPER_DIR / "ui_settings.json"
+CONFIG_DIR = HELPER_DIR / "config"
+SETTINGS_PATH = CONFIG_DIR / "ui_settings.json"
 TOOLS_DIR = HELPER_DIR / "Tools"
 TOOL_MODULE_PATHS = {
     "story_skip": TOOLS_DIR / "StorySkip" / "StorySkip.py",
@@ -295,6 +297,7 @@ def discover_running_mumu_instances(
 
 def save_ui_settings(settings: dict[str, Any], path: Path = SETTINGS_PATH) -> None:
     path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
     temporary_path = path.with_suffix(path.suffix + ".tmp")
     temporary_path.write_text(
         json.dumps(settings, ensure_ascii=False, indent=2) + "\n",
@@ -455,22 +458,16 @@ class AccountCardView:
         self.task_views: dict[str, TaskStatusView] = {}
 
         for task_name in UI_TASK_ORDER:
-            enabled = controller.task_is_enabled(system_state, task_name)
+            enabled = controller.combined_task_is_enabled(system_state, task_name)
             due_count = (
-                controller.task_runs_due(task_name, system_state, now)
+                controller.combined_task_runs_due(task_name, system_state, now)
                 if enabled
                 else 0
             )
             available = controller.task_is_available(task_name, now)
             completed_detail = None
             if task_name == controller.BOUNTY_TASK:
-                completed_detail = controller.BOUNTY_RESULT_DETAILS.get(
-                    controller.task_record_result(
-                        system_state,
-                        controller.BOUNTY_TASK,
-                    ),
-                    "当前周期已检查",
-                )
+                completed_detail = controller.combined_bounty_detail(system_state)
             elif task_name == controller.MERCHANT_TASK:
                 completed_detail = controller.MERCHANT_RESULT_DETAILS.get(
                     controller.task_record_result(
@@ -502,10 +499,7 @@ class AccountCardView:
             )
             if task_name == controller.BOUNTY_TASK:
                 bounty_style = BOUNTY_HIGHLIGHT_STYLES.get(
-                    controller.task_record_result(
-                        system_state,
-                        controller.BOUNTY_TASK,
-                    )
+                    controller.combined_bounty_highlight_result(system_state)
                 )
                 task_view.set_highlight(
                     due_count == 0 and bounty_style is not None,
@@ -648,6 +642,7 @@ class AssistantDashboard:
         self.cards: dict[tuple[str, str], AccountCardView] = {}
         self.ui_queue: queue.Queue[tuple[str, Any]] = queue.Queue()
         self.tool_log_sequence = 0
+        self._reported_ui_errors: set[tuple[str, str, str]] = set()
         self.nav_items: dict[str, ft.Container] = {}
         self.tool_nav_items: dict[str, ft.Container] = {}
         self.settings_nav_items: dict[str, ft.Container] = {}
@@ -972,6 +967,12 @@ class AssistantDashboard:
             )
             for task_name in UI_TASK_ORDER
         }
+        self.cross_region_enabled = ft.Switch(
+            label="启用跨区账号（砂狐乐园）",
+            value=False,
+            active_color=COLORS["active"],
+            on_change=self._on_cross_region_setting_changed,
+        )
         self.heart_team_role_setting = ft.Dropdown(
             label="同心队身份",
             hint_text="请选择当前角色在同心队中的身份",
@@ -1571,6 +1572,12 @@ class AssistantDashboard:
                     size=11,
                     color=COLORS["muted"],
                 ),
+                self.cross_region_enabled,
+                ft.Text(
+                    "每个账号及系统均可独立启用；砂狐乐园固定执行悬赏检测和两位跨区好友点赞。",
+                    size=11,
+                    color=COLORS["muted"],
+                ),
                 ft.Divider(height=10, color=COLORS["border"]),
                 task_checks,
                 self.heart_team_role_setting,
@@ -1707,6 +1714,8 @@ class AssistantDashboard:
             self.task_settings_message.color = COLORS["error"]
             for checkbox in self.task_settings_checks.values():
                 checkbox.disabled = True
+            self.cross_region_enabled.disabled = True
+            self.cross_region_enabled.value = False
             self.heart_team_role_setting.disabled = True
             self.heart_team_role_setting.value = "none"
             if update:
@@ -1741,12 +1750,11 @@ class AssistantDashboard:
         system_state = None
         if role is not None and self.task_settings_state is not None:
             account, system = role
-            system_state = (
-                self.task_settings_state.get("accounts", {})
-                .get(account, {})
-                .get("systems", {})
-                .get(system)
+            account_state = self.task_settings_state.get("accounts", {}).get(
+                account,
+                {},
             )
+            system_state = account_state.get("systems", {}).get(system)
         for task_name, checkbox in self.task_settings_checks.items():
             checkbox.disabled = system_state is None
             checkbox.value = (
@@ -1754,6 +1762,11 @@ class AssistantDashboard:
                 if isinstance(system_state, dict)
                 else False
             )
+        self.cross_region_enabled.disabled = system_state is None
+        self.cross_region_enabled.value = bool(
+            isinstance(system_state, dict)
+            and controller.cross_region_is_enabled(system_state)
+        )
         self.heart_team_role_setting.disabled = system_state is None
         selected_heart_role = (
             controller.heart_team_role(system_state)
@@ -1769,6 +1782,11 @@ class AssistantDashboard:
     def _on_task_settings_role_selected(self, _event: Any = None) -> None:
         self.task_settings_message.value = ""
         self._apply_task_settings_selection()
+        self._safe_update()
+
+    def _on_cross_region_setting_changed(self, _event: Any = None) -> None:
+        self.task_settings_message.value = "尚未保存"
+        self.task_settings_message.color = COLORS["warning"]
         self._safe_update()
 
     def _on_heart_team_role_selected(self, _event: Any = None) -> None:
@@ -1823,6 +1841,9 @@ class AssistantDashboard:
         try:
             state, _ = controller.load_state(controller.STATUS_PATH)
             system_state = state["accounts"][account]["systems"][system]
+            system_state["cross_region_enabled"] = bool(
+                self.cross_region_enabled.value
+            )
             selected_heart_role = str(self.heart_team_role_setting.value)
             controller.set_heart_team_role(
                 system_state,
@@ -1851,8 +1872,53 @@ class AssistantDashboard:
     def _safe_update(self) -> None:
         try:
             self.page.update()
+        except Exception as exc:
+            self._report_ui_exception("刷新页面", exc)
+
+    def _report_ui_exception(self, context: str, exc: BaseException) -> None:
+        """将 UI 无法展示的异常回退到启动控制台，并抑制重复刷屏。"""
+        signature = (context, type(exc).__name__, str(exc))
+        reported = getattr(self, "_reported_ui_errors", None)
+        if reported is None:
+            reported = set()
+            self._reported_ui_errors = reported
+        if signature in reported:
+            return
+        if len(reported) >= 100:
+            reported.clear()
+        reported.add(signature)
+
+        stream = sys.__stderr__ or sys.stderr
+        if stream is None:
+            return
+        try:
+            timestamp = datetime.now().strftime("%H:%M:%S")
+            stream.write(
+                f"{timestamp} [ERROR] [UI/{context}] "
+                f"{type(exc).__name__}: {exc}\n"
+            )
+            traceback.print_exception(
+                type(exc),
+                exc,
+                exc.__traceback__,
+                file=stream,
+            )
+            stream.flush()
         except Exception:
-            pass
+            # 控制台可能已随窗口关闭；异常上报本身不能影响 UI 工作线程。
+            return
+
+    def _append_ui_event_error(self, event_type: str, exc: BaseException) -> None:
+        """尽量在 UI 内显示事件异常；失败时仍保留控制台 traceback。"""
+        self._report_ui_exception(f"处理事件 {event_type}", exc)
+        try:
+            self._append_log_now(
+                "ERROR",
+                f"UI 事件处理失败（{event_type}）："
+                f"{type(exc).__name__}: {exc}",
+            )
+        except Exception as render_exc:
+            self._report_ui_exception("显示 UI 异常", render_exc)
 
     def append_log(self, level: str, message: str) -> None:
         """任意线程只入队，不直接修改 Flet 控件。"""
@@ -1960,8 +2026,8 @@ class AssistantDashboard:
 
     async def _ui_update_pump(self) -> None:
         """在 Flet 页面事件循环中消费日志/状态，避免工作线程直接刷 UI。"""
-        try:
-            while True:
+        while True:
+            try:
                 changed = False
                 # 限制单次处理量，避免大量 OCR 输出时卡住页面循环。
                 for _ in range(100):
@@ -1971,26 +2037,40 @@ class AssistantDashboard:
                         break
 
                     changed = True
-                    if event_type == "log":
-                        level, message = payload
-                        self._append_log_now(level, message)
-                    elif event_type == "tool_log":
-                        level, message = payload
-                        self._append_tool_log_now(level, message)
-                    elif event_type == "controller_event":
-                        self._apply_controller_event(payload)
-                    elif event_type == "worker_finished":
-                        self._apply_worker_finished(**payload)
-                    elif event_type == "tool_finished":
-                        self._apply_tool_finished(**payload)
-                    elif event_type == "secret_attempts":
-                        self._apply_secret_attempts(payload)
+                    try:
+                        if event_type == "log":
+                            level, message = payload
+                            self._append_log_now(level, message)
+                        elif event_type == "tool_log":
+                            level, message = payload
+                            self._append_tool_log_now(level, message)
+                        elif event_type == "controller_event":
+                            self._apply_controller_event(payload)
+                        elif event_type == "worker_finished":
+                            self._apply_worker_finished(**payload)
+                        elif event_type == "tool_finished":
+                            self._apply_tool_finished(**payload)
+                        elif event_type == "secret_attempts":
+                            self._apply_secret_attempts(payload)
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception as exc:
+                        # 单条坏事件不能终止整个日志泵；继续处理后续日志。
+                        self._append_ui_event_error(str(event_type), exc)
 
                 if changed:
-                    self.page.update()
+                    try:
+                        self.page.update()
+                    except Exception as exc:
+                        # 会话短暂断开或控件刷新失败时保留消费循环。
+                        self._report_ui_exception("刷新日志面板", exc)
                 await asyncio.sleep(0.05)
-        except asyncio.CancelledError:
-            return
+            except asyncio.CancelledError:
+                return
+            except Exception as exc:
+                # 兜住循环自身的意外错误，避免日志通道永久静默。
+                self._report_ui_exception("日志刷新循环", exc)
+                await asyncio.sleep(0.1)
 
     def refresh_cards(self, update: bool = True) -> bool:
         try:
@@ -2032,7 +2112,7 @@ class AssistantDashboard:
         if self.running:
             return
         if self.refresh_cards():
-            self.append_log("INFO", "已重新读取 account_status.json")
+            self.append_log("INFO", "已重新读取 config/account_status.json")
 
     def _refresh_serverchan_status(self) -> None:
         configured = bool(get_serverchan_sendkey())
@@ -2694,6 +2774,10 @@ class AssistantDashboard:
                 "ERROR",
                 f"{TOOL_LABELS.get(tool_name, tool_name)}发生异常：{exc}",
             )
+            self._report_ui_exception(
+                f"小工具线程 {TOOL_LABELS.get(tool_name, tool_name)}",
+                exc,
+            )
         finally:
             if previous_interval is not None:
                 try:
@@ -2813,6 +2897,7 @@ class AssistantDashboard:
                 )
         except Exception as exc:
             self.append_log("ERROR", f"中控未捕获异常：{exc}")
+            self._report_ui_exception("中控后台线程", exc)
         finally:
             writer.flush()
             self.ui_queue.put(

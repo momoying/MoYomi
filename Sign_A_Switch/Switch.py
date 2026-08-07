@@ -33,7 +33,7 @@ SCREENSHOT_INTERVAL = 0.5
 utils.config["screenshot_speed"] = SCREENSHOT_INTERVAL
 
 ERROR_SCREENSHOT_DIR = SCRIPT_DIR / "error_screenshots"
-ACCOUNT_STATUS_PATH = SCRIPT_DIR.parent / "account_status.json"
+ACCOUNT_STATUS_PATH = SCRIPT_DIR.parent / "config" / "account_status.json"
 
 TEMPLATES = {
     "center": str(SCRIPT_DIR / "center.png"),

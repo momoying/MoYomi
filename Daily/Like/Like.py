@@ -439,9 +439,10 @@ def _wait_for_main(timeout: float = MAIN_WAIT_SECONDS) -> bool:
     return False
 
 
-def run() -> bool:
+def run(cross_region_only: bool = False) -> bool:
     utils.connect_to_mumu()
-    print("开始好友点赞任务，截图间隔 0.5 秒")
+    mode_label = "仅跨区好友" if cross_region_only else "普通与跨区好友"
+    print(f"开始好友点赞任务（{mode_label}），截图间隔 0.5 秒")
 
     if not _ensure_friend_menu_expanded():
         return False
@@ -451,8 +452,16 @@ def run() -> bool:
     first_category = _wait_for_active_category()
     if first_category is None:
         return False
-    second_category = "cross_region" if first_category == "friend" else "friend"
-    for index, category in enumerate((first_category, second_category)):
+    if cross_region_only:
+        categories = ("cross_region",)
+    else:
+        second_category = "cross_region" if first_category == "friend" else "friend"
+        categories = (first_category, second_category)
+
+    for index, category in enumerate(categories):
+        if index == 0 and category != first_category:
+            if not _switch_category(category):
+                return False
         if index > 0 and not _switch_category(category):
             return False
         if category == "cross_region":

@@ -1,6 +1,7 @@
 flet==0.86.1
 flet-desktop==0.86.1
 setuptools==75.8.0
+requests==2.34.2
 
 numpy==1.26.4
 opencv-python==4.11.0.86

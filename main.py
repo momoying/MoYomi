@@ -24,7 +24,8 @@ print = LOGGER.legacy_print
 HELPER_DIR = Path(__file__).resolve().parent
 DAILY_TASKS_DIR = HELPER_DIR / "Daily"
 PROJECT_ROOT = HELPER_DIR.parent
-STATUS_PATH = HELPER_DIR / "account_status.json"
+CONFIG_DIR = HELPER_DIR / "config"
+STATUS_PATH = CONFIG_DIR / "account_status.json"
 HEART_TEAM_TASK = "heart_team"
 HEART_TEAM_BATTLES_COMPLETED_CLEANUP_FAILED = (
     "battles_completed_cleanup_failed"
@@ -88,7 +89,19 @@ DEFAULT_TASK_ENABLED = {
 
 BOUNTY_TASK = "bounty_checked"
 MERCHANT_TASK = "merchant_checked"
-STATUS_VERSION = 4
+STATUS_VERSION = 7
+SAME_REGION = "same"
+CROSS_REGION = "cross"
+VALID_REGIONS = (SAME_REGION, CROSS_REGION)
+REGION_LABELS = {
+    SAME_REGION: "狐之宴",
+    CROSS_REGION: "砂狐乐园",
+}
+REGION_STATE_KEYS = {
+    SAME_REGION: "同区",
+    CROSS_REGION: "跨区",
+}
+CROSS_REGION_TASKS = ("liked", BOUNTY_TASK)
 TASK_RESULT_FIELDS = {
     BOUNTY_TASK: "bounty_result",
     MERCHANT_TASK: "merchant_result",
@@ -129,8 +142,8 @@ MERCHANT_SKIPPED_RESULT = "skipped_after_50"
 class ControllerServices:
     select_account: Callable[[str, bool], Optional[str]]
     exit_to_login: Callable[[], bool]
-    sign_in: Callable[[str], bool]
-    task_runners: dict[str, Callable[[], Any]]
+    sign_in: Callable[[str, str], bool]
+    task_runners: dict[str, Callable[..., Any]]
     startup_recovery: Optional[Callable[[], Any]] = None
     task_timeout_recovery: Optional[Callable[[Any], Any]] = None
     task_recovery_retries: int = 1
@@ -150,6 +163,7 @@ class WorkItem:
     account_name: str
     system: str
     tasks: tuple[TaskWork, ...]
+    region: str = SAME_REGION
 
 
 EventCallback = Callable[[dict[str, Any]], None]
@@ -264,7 +278,7 @@ def build_services(
             exit_current=exit_current,
         ),
         exit_to_login=switch_module.exit_to_login,
-        sign_in=sign_module.run,
+        sign_in=lambda system, region: sign_module.run(system, region=region),
         task_runners=task_runners,
         startup_recovery=lambda: recovery_module.recover_to_login(
             switch_module.exit_to_login,
@@ -305,13 +319,22 @@ def build_services(
 def _empty_system_state() -> dict[str, Any]:
     return {
         "mail_collected": None,
-        "liked": None,
+        "liked": {
+            "同区": None,
+            "跨区": None,
+        },
         "coop_reward_completed": None,
         "experience_monster_completed": None,
         "one_tap_daily_completed": None,
         "bounty_checked": {
-            "time": None,
-            "bounty_result": None,
+            "同区": {
+                "time": None,
+                "bounty_result": None,
+            },
+            "跨区": {
+                "time": None,
+                "bounty_result": None,
+            },
         },
         "merchant_checked": {
             "time": None,
@@ -324,6 +347,7 @@ def _empty_system_state() -> dict[str, Any]:
         },
         "latest_task_completed_at": None,
         "task_enabled": dict(DEFAULT_TASK_ENABLED),
+        "cross_region_enabled": False,
     }
 
 
@@ -337,12 +361,38 @@ def _normalize_timestamp(value: Any) -> Optional[str]:
     return value
 
 
+def _region_task_value(
+    system_state: dict[str, Any],
+    task_name: str,
+    region: str,
+) -> Any:
+    value = system_state.get(task_name)
+    if task_name not in CROSS_REGION_TASKS:
+        return value
+
+    region_key = REGION_STATE_KEYS[region]
+    if isinstance(value, dict) and any(
+        key in value for key in REGION_STATE_KEYS.values()
+    ):
+        return value.get(region_key)
+    if region == SAME_REGION:
+        # v5 以前同区记录直接保存在任务字段中。
+        return value
+
+    # 兼容上一版短暂使用过的独立 cross_region 状态对象。
+    legacy_cross = system_state.get("cross_region")
+    if isinstance(legacy_cross, dict):
+        return legacy_cross.get(task_name)
+    return None
+
+
 def task_record_time(
     system_state: dict[str, Any],
     task_name: str,
+    region: str = SAME_REGION,
 ) -> Optional[str]:
-    """读取任务时间；兼容 v2 的顶层时间字符串。"""
-    value = system_state.get(task_name)
+    """读取任务时间；点赞和悬赏可分别读取同区、跨区记录。"""
+    value = _region_task_value(system_state, task_name, region)
     time_field = TASK_TIME_FIELDS.get(task_name)
     if time_field is not None and isinstance(value, dict):
         value = value.get(time_field)
@@ -352,28 +402,39 @@ def task_record_time(
 def task_record_result(
     system_state: dict[str, Any],
     task_name: str,
+    region: str = SAME_REGION,
 ) -> Optional[str]:
-    """读取任务结果；兼容 v2 的顶层结果字段。"""
+    """读取聚合任务结果；悬赏可分别读取同区、跨区。"""
     result_field = TASK_RESULT_FIELDS.get(task_name)
     if result_field is None:
         return None
-    record = system_state.get(task_name)
+    record = _region_task_value(system_state, task_name, region)
     if isinstance(record, dict):
         return record.get(result_field)
-    return system_state.get(result_field)
+    return system_state.get(result_field) if region == SAME_REGION else None
 
 
 def set_task_record_result(
     system_state: dict[str, Any],
     task_name: str,
     result: Optional[str],
+    region: str = SAME_REGION,
 ) -> None:
-    """写入聚合任务结果，同时保留该任务已有时间。"""
+    """写入指定区服的聚合任务结果，同时保留已有时间。"""
     result_field = TASK_RESULT_FIELDS[task_name]
-    system_state[task_name] = {
-        "time": task_record_time(system_state, task_name),
+    records = system_state.get(task_name)
+    if not isinstance(records, dict) or not any(
+        key in records for key in REGION_STATE_KEYS.values()
+    ):
+        records = {
+            REGION_STATE_KEYS[SAME_REGION]: None,
+            REGION_STATE_KEYS[CROSS_REGION]: None,
+        }
+    records[REGION_STATE_KEYS[region]] = {
+        "time": task_record_time(system_state, task_name, region),
         result_field: result,
     }
+    system_state[task_name] = records
     system_state.pop(result_field, None)
 
 
@@ -402,11 +463,19 @@ def set_heart_team_role(
     }
 
 
+def cross_region_is_enabled(system_state: dict[str, Any]) -> bool:
+    """返回当前大账号/系统是否启用砂狐乐园角色。"""
+    return system_state.get("cross_region_enabled") is True
+
+
 def _normalize_system_state(raw: Any) -> dict[str, Any]:
     raw = raw if isinstance(raw, dict) else {}
     state = _empty_system_state()
     state[MAIL_TASK] = _normalize_timestamp(raw.get(MAIL_TASK))
-    state["liked"] = _normalize_timestamp(raw.get("liked"))
+    state["liked"] = {
+        REGION_STATE_KEYS[region]: task_record_time(raw, "liked", region)
+        for region in VALID_REGIONS
+    }
     state["one_tap_daily_completed"] = _normalize_timestamp(
         raw.get("one_tap_daily_completed")
     )
@@ -414,21 +483,23 @@ def _normalize_system_state(raw: Any) -> dict[str, Any]:
     state["guild_kirin_completed"] = _normalize_timestamp(
         raw.get("guild_kirin_completed")
     )
-    bounty_time = task_record_time(raw, BOUNTY_TASK)
-    bounty_result = task_record_result(raw, BOUNTY_TASK)
-    if bounty_result == "no_bounty":
-        # 悬赏入口恒定存在；旧版把入口漏检误记为成功，必须重新检测。
-        bounty_time = None
-        bounty_result = None
-    if bounty_result == "magatama_collaboration":
-        # 兼容旧版未区分“协/享”的状态；无法还原时按普通勾协处理。
-        bounty_result = "normal_magatama_collaboration"
-    state[BOUNTY_TASK] = {
-        "time": bounty_time,
-        "bounty_result": (
-            bounty_result if bounty_result in BOUNTY_RESULT_DETAILS else None
-        ),
-    }
+    state[BOUNTY_TASK] = {}
+    for region in VALID_REGIONS:
+        bounty_time = task_record_time(raw, BOUNTY_TASK, region)
+        bounty_result = task_record_result(raw, BOUNTY_TASK, region)
+        if bounty_result == "no_bounty":
+            # 悬赏入口恒定存在；旧版把入口漏检误记为成功，必须重新检测。
+            bounty_time = None
+            bounty_result = None
+        if bounty_result == "magatama_collaboration":
+            # 兼容旧版未区分“协/享”的状态；无法还原时按普通勾协处理。
+            bounty_result = "normal_magatama_collaboration"
+        state[BOUNTY_TASK][REGION_STATE_KEYS[region]] = {
+            "time": bounty_time,
+            "bounty_result": (
+                bounty_result if bounty_result in BOUNTY_RESULT_DETAILS else None
+            ),
+        }
     merchant_time = task_record_time(raw, MERCHANT_TASK)
     merchant_result = task_record_result(raw, MERCHANT_TASK)
     if merchant_result == "cheapest_blue_ticket_found":
@@ -482,11 +553,12 @@ def _normalize_system_state(raw: Any) -> dict[str, Any]:
         )
         for task_name in TASK_ORDER
     }
+    state["cross_region_enabled"] = raw.get("cross_region_enabled") is True
     return state
 
 
 def load_state(path: Path = STATUS_PATH) -> tuple[dict[str, Any], bool]:
-    """加载 v4 状态；兼容旧版扁平任务字段并自动迁移。"""
+    """加载 v7 状态；所有账号均可按系统启用跨区任务。"""
     with Path(path).open("r", encoding="utf-8") as file:
         raw = json.load(file)
 
@@ -521,6 +593,8 @@ def load_state(path: Path = STATUS_PATH) -> tuple[dict[str, Any], bool]:
         invalid_systems = [system for system in systems if system not in {"IOS", "Android"}]
         if invalid_systems:
             raise ValueError(f"账号 {account_name} 包含不支持的系统: {invalid_systems}")
+        if "cross_region_available" in account_raw:
+            migrated = True
         accounts[account_name] = {"systems": systems}
 
     return {"version": STATUS_VERSION, "accounts": accounts}, migrated
@@ -607,11 +681,18 @@ def mail_is_due(system_state: dict[str, Any], now: datetime) -> bool:
     return completed is None or completed < _latest_mail_refresh(now)
 
 
-def bounty_is_due(system_state: dict[str, Any], now: datetime) -> bool:
+def bounty_is_due(
+    system_state: dict[str, Any],
+    now: datetime,
+    region: str = SAME_REGION,
+) -> bool:
     """悬赏每天 06:00/18:00 重置；只需检查当前最新周期。"""
     if now.tzinfo is None:
         now = now.astimezone()
-    checked = _parse_timestamp(task_record_time(system_state, BOUNTY_TASK), now)
+    checked = _parse_timestamp(
+        task_record_time(system_state, BOUNTY_TASK, region),
+        now,
+    )
     if checked is None:
         return True
     return checked < _latest_bounty_refresh(now)
@@ -645,6 +726,88 @@ def task_is_enabled(system_state: dict[str, Any], task_name: str) -> bool:
     return value if isinstance(value, bool) else default
 
 
+def combined_task_is_enabled(
+    system_state: dict[str, Any],
+    task_name: str,
+) -> bool:
+    """卡片层面的启用状态：同区任务或固定跨区任务任一启用即可。"""
+    return task_is_enabled(system_state, task_name) or (
+        cross_region_is_enabled(system_state)
+        and task_name in CROSS_REGION_TASKS
+    )
+
+
+def combined_task_runs_due(
+    task_name: str,
+    system_state: dict[str, Any],
+    now: datetime,
+) -> int:
+    """合并同一卡片下狐之宴与砂狐乐园的到期次数。"""
+    runs = (
+        task_runs_due(task_name, system_state, now)
+        if task_is_enabled(system_state, task_name)
+        else 0
+    )
+    if cross_region_is_enabled(system_state) and task_name in CROSS_REGION_TASKS:
+        runs += task_runs_due(
+            task_name,
+            system_state,
+            now,
+            region=CROSS_REGION,
+        )
+    return runs
+
+
+def combined_bounty_detail(system_state: dict[str, Any]) -> str:
+    """生成旧卡片使用的同区/跨区悬赏摘要。"""
+    same_result = (
+        task_record_result(system_state, BOUNTY_TASK, SAME_REGION)
+        if task_is_enabled(system_state, BOUNTY_TASK)
+        else None
+    )
+    if not cross_region_is_enabled(system_state):
+        return BOUNTY_RESULT_DETAILS.get(same_result, "当前周期已检查")
+
+    cross_result = task_record_result(system_state, BOUNTY_TASK, CROSS_REGION)
+    short_labels = {
+        "normal_magatama_collaboration": "普勾",
+        "sharing_magatama_collaboration": "现世勾",
+    }
+    same_label = short_labels.get(same_result)
+    cross_label = short_labels.get(cross_result)
+    if same_label is None and cross_label is None:
+        return "无勾协"
+    if same_label is not None and same_label == cross_label:
+        return f"{same_label}（双）"
+
+    details = []
+    if same_label is not None:
+        details.append(f"{same_label}（同）")
+    if cross_label is not None:
+        details.append(f"{cross_label}（跨）")
+    return " · ".join(details)
+
+
+def combined_bounty_highlight_result(
+    system_state: dict[str, Any],
+) -> Optional[str]:
+    """沿用旧配色；任一区有现世勾时优先使用现世勾高亮。"""
+    results = [
+        task_record_result(system_state, BOUNTY_TASK, SAME_REGION)
+        if task_is_enabled(system_state, BOUNTY_TASK)
+        else None
+    ]
+    if cross_region_is_enabled(system_state):
+        results.append(
+            task_record_result(system_state, BOUNTY_TASK, CROSS_REGION)
+        )
+    if "sharing_magatama_collaboration" in results:
+        return "sharing_magatama_collaboration"
+    if "normal_magatama_collaboration" in results:
+        return "normal_magatama_collaboration"
+    return None
+
+
 def guild_kirin_is_due(system_state: dict[str, Any], now: datetime) -> bool:
     """寮麒麟仅周一至周四的 06:00（含）至 23:00（不含）执行一次。"""
     if now.tzinfo is None:
@@ -656,7 +819,13 @@ def guild_kirin_is_due(system_state: dict[str, Any], now: datetime) -> bool:
     return completed is None or completed < window_start
 
 
-def task_is_due(task_name: str, system_state: dict[str, Any], now: datetime) -> bool:
+def task_is_due(
+    task_name: str,
+    system_state: dict[str, Any],
+    now: datetime,
+    *,
+    region: str = SAME_REGION,
+) -> bool:
     """判断同一账号、同一系统的任务在当前时刻是否需要执行。"""
     if now.tzinfo is None:
         now = now.astimezone()
@@ -687,7 +856,10 @@ def task_is_due(task_name: str, system_state: dict[str, Any], now: datetime) -> 
         return now - completed >= timedelta(hours=4)
 
     if task_name == "liked":
-        completed = _parse_timestamp(system_state.get("liked"), now)
+        completed = _parse_timestamp(
+            task_record_time(system_state, "liked", region),
+            now,
+        )
         return completed is None or completed.date() != now.date()
 
     if task_name == COOP_REWARD_TASK:
@@ -701,7 +873,7 @@ def task_is_due(task_name: str, system_state: dict[str, Any], now: datetime) -> 
         return experience_runs_due(system_state, now) > 0
 
     if task_name == BOUNTY_TASK:
-        return bounty_is_due(system_state, now)
+        return bounty_is_due(system_state, now, region)
 
     if task_name == MERCHANT_TASK:
         if not task_is_available(MERCHANT_TASK, now):
@@ -738,11 +910,13 @@ def task_runs_due(
     task_name: str,
     system_state: dict[str, Any],
     now: datetime,
+    *,
+    region: str = SAME_REGION,
 ) -> int:
     """返回任务在当前刷新周期需要执行的次数。"""
     if task_name == "experience_monster_completed":
         return experience_runs_due(system_state, now)
-    return 1 if task_is_due(task_name, system_state, now) else 0
+    return 1 if task_is_due(task_name, system_state, now, region=region) else 0
 
 
 def _ordered_due_tasks(
@@ -854,31 +1028,50 @@ def build_work_queue(
                 shuffle_tasks,
                 coop_allocations.get((account_name, system), 0),
             )
-            if not tasks:
-                continue
+            if tasks:
+                if heart_team_role(system_state) == "member":
+                    member_reserve = tuple(
+                        task
+                        for task in tasks
+                        if task.task_name == HEART_TEAM_TASK
+                    )
+                    regular_tasks = tuple(
+                        task
+                        for task in tasks
+                        if task.task_name != HEART_TEAM_TASK
+                    )
+                    if regular_tasks:
+                        queue.append(
+                            WorkItem(account_name, system, regular_tasks)
+                        )
+                    if member_reserve:
+                        deferred_member_reserves.append(
+                            WorkItem(account_name, system, member_reserve)
+                        )
+                else:
+                    queue.append(WorkItem(account_name, system, tasks))
 
-            if heart_team_role(system_state) == "member":
-                member_reserve = tuple(
-                    task
-                    for task in tasks
-                    if task.task_name == HEART_TEAM_TASK
-                )
-                regular_tasks = tuple(
-                    task
-                    for task in tasks
-                    if task.task_name != HEART_TEAM_TASK
-                )
-                if regular_tasks:
+            if cross_region_is_enabled(system_state):
+                cross_tasks = [
+                    TaskWork(task_name, 1)
+                    for task_name in CROSS_REGION_TASKS
+                    if task_is_due(
+                        task_name,
+                        system_state,
+                        now,
+                        region=CROSS_REGION,
+                    )
+                ]
+                shuffle_tasks(cross_tasks)
+                if cross_tasks:
                     queue.append(
-                        WorkItem(account_name, system, regular_tasks)
+                        WorkItem(
+                            account_name,
+                            system,
+                            tuple(cross_tasks),
+                            region=CROSS_REGION,
+                        )
                     )
-                if member_reserve:
-                    deferred_member_reserves.append(
-                        WorkItem(account_name, system, member_reserve)
-                    )
-                continue
-
-            queue.append(WorkItem(account_name, system, tasks))
 
     # 不改变上方账号/系统的随机遍历顺序。成员在原位置先执行其他任务，
     # 同心队预存统一追加为收尾队列，确保发生在当天队长战斗之后。
@@ -889,9 +1082,37 @@ def record_task_completion(
     task_name: str,
     system_state: dict[str, Any],
     completed_at: datetime,
+    *,
+    region: str = SAME_REGION,
 ) -> str:
     """写入精确到秒的最近完成时间。"""
     timestamp = completed_at.astimezone().isoformat(timespec="seconds")
+    if task_name in CROSS_REGION_TASKS:
+        records = system_state.get(task_name)
+        if not isinstance(records, dict) or not any(
+            key in records for key in REGION_STATE_KEYS.values()
+        ):
+            records = {
+                REGION_STATE_KEYS[SAME_REGION]: None,
+                REGION_STATE_KEYS[CROSS_REGION]: None,
+            }
+        region_key = REGION_STATE_KEYS[region]
+        if task_name == "liked":
+            records[region_key] = timestamp
+        else:
+            current = records.get(region_key)
+            record = dict(current) if isinstance(current, dict) else {}
+            record["time"] = timestamp
+            record["bounty_result"] = task_record_result(
+                system_state,
+                BOUNTY_TASK,
+                region,
+            )
+            records[region_key] = record
+        system_state[task_name] = records
+        system_state["latest_task_completed_at"] = timestamp
+        return timestamp
+
     time_field = TASK_TIME_FIELDS.get(task_name)
     if time_field is None:
         system_state[task_name] = timestamp
@@ -951,6 +1172,7 @@ def _invoke_task_runner(
     run_index: int,
     run_count: int,
     system_state: dict[str, Any],
+    region: str = SAME_REGION,
 ) -> tuple[bool, Optional[str]]:
     """执行一次任务调用，并统一解释不同任务的返回值。"""
     task_result: Optional[str] = None
@@ -977,6 +1199,8 @@ def _invoke_task_runner(
             success = True
         else:
             success = raw_result is True
+    elif task_name == "liked" and region == CROSS_REGION:
+        success = bool(runner(cross_region_only=True))
     else:
         raw_result = runner()
         success = bool(raw_result)
@@ -1021,7 +1245,7 @@ def run(
 
     if migrated:
         save_state(state, status_path)
-        print("账号状态 JSON 已迁移为 v4 同心队状态结构")
+        print("账号状态 JSON 已迁移为 v7 全账号跨区状态结构")
 
     notification_finished = False
 
@@ -1067,7 +1291,10 @@ def run(
             + (f"×{task.run_count}" if task.run_count > 1 else "")
             for task in item.tasks
         )
-        print(f"  {index}. {item.account_name} / {item.system}: {task_summary}")
+        print(
+            f"  {index}. {item.account_name} / {item.system} / "
+            f"{REGION_LABELS[item.region]}: {task_summary}"
+        )
 
     try:
         screenshot_interval = None
@@ -1153,6 +1380,7 @@ def run(
     for work_item in work_queue:
         account_name = work_item.account_name
         system = work_item.system
+        region = work_item.region
         system_state = state["accounts"][account_name]["systems"][system]
         if stop_event is not None and stop_event.is_set():
             print("Daily 中控已安全停止")
@@ -1189,12 +1417,16 @@ def run(
             print(f"\n跳过 {account_name} / {system}：队列内任务均已完成")
             continue
 
-        print(f"\n===== {account_name} / {system} =====")
+        print(
+            f"\n===== {account_name} / {system} / "
+            f"{REGION_LABELS[region]} ====="
+        )
         _emit_event(
             event_callback,
             "account_started",
             account=account_name,
             system=system,
+            region=region,
             phase="select_account",
         )
         if first_login:
@@ -1225,14 +1457,17 @@ def run(
             system=system,
             phase="sign_in",
         )
-        if not services.sign_in(system):
-            message = f"{account_name} / {system} 登录失败"
+        if not services.sign_in(system, region):
+            message = (
+                f"{account_name} / {system} / {REGION_LABELS[region]} 登录失败"
+            )
             print(f"[ERROR] {message}")
             _emit_event(
                 event_callback,
                 "error",
                 account=account_name,
                 system=system,
+                region=region,
                 phase="sign_in",
                 message=message,
             )
@@ -1256,6 +1491,7 @@ def run(
                     "task_started",
                     account=account_name,
                     system=system,
+                    region=region,
                     task=task_name,
                     run_index=run_index,
                     run_count=run_count,
@@ -1270,6 +1506,7 @@ def run(
                             run_index,
                             run_count,
                             system_state,
+                            region,
                         )
                         if attempt_result is not None:
                             task_result = attempt_result
@@ -1356,11 +1593,21 @@ def run(
                         message=recovery_message,
                     )
 
-            timestamp = record_task_completion(task_name, system_state, now_provider())
+            timestamp = record_task_completion(
+                task_name,
+                system_state,
+                now_provider(),
+                region=region,
+            )
             detail = None
             if task_name == BOUNTY_TASK and task_result is not None:
-                set_task_record_result(system_state, BOUNTY_TASK, task_result)
-                detail = BOUNTY_RESULT_DETAILS[task_result]
+                set_task_record_result(
+                    system_state,
+                    BOUNTY_TASK,
+                    task_result,
+                    region=region,
+                )
+                detail = combined_bounty_detail(system_state)
             elif task_name == MERCHANT_TASK and task_result is not None:
                 set_task_record_result(system_state, MERCHANT_TASK, task_result)
                 detail = MERCHANT_RESULT_DETAILS[task_result]
@@ -1374,6 +1621,8 @@ def run(
                             f"发现50蓝票，已将后续 {skipped_count} 个"
                             "账号/系统的奸商检测标记为跳过"
                         )
+            elif task_name == "liked" and region == CROSS_REGION:
+                detail = "跨区好友 ×2 已点赞"
             save_state(state, status_path)
             print(f"{label}完成时间已写入: {timestamp}")
             _emit_event(
@@ -1381,10 +1630,15 @@ def run(
                 "task_completed",
                 account=account_name,
                 system=system,
+                region=region,
                 task=task_name,
                 timestamp=timestamp,
                 detail=detail,
-                result=task_result,
+                result=(
+                    combined_bounty_highlight_result(system_state)
+                    if task_name == BOUNTY_TASK
+                    else task_result
+                ),
             )
             if task_name in {BOUNTY_TASK, MERCHANT_TASK}:
                 try_detection_notification(now_provider())

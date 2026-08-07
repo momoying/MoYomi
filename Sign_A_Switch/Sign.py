@@ -41,6 +41,7 @@ TEMPLATES = {
     "login": str(SCRIPT_DIR / "sign.png"),
     "ios": str(SCRIPT_DIR / "IOS.png"),
     "android": str(SCRIPT_DIR / "Android.png"),
+    "region_selection": str(SCRIPT_DIR / "select_region.png"),
 }
 
 # 以下坐标均按 1280x720 截图设置。
@@ -48,10 +49,18 @@ REGIONS = {
     "login": ((360, 390), (920, 500)),
     "ios": ((480, 320), (640, 470)),
     "android": ((640, 320), (800, 470)),
+    "region_selection": ((430, 20), (850, 120)),
 }
 ENTER_GAME_TEXT_REGION = (500, 540, 780, 640)
 # “进入游戏”四个字内部的小范围，识别成功后在这里随机点击。
 ENTER_GAME_CLICK_REGION = (555, 570, 725, 625)
+SERVER_TEXT_REGION = (520, 490, 715, 550)
+REGION_SWITCH_CLICK_REGION = (720, 510, 815, 540)
+# 选择区域页布局固定：左侧砂狐乐园，右侧狐之宴。
+REGION_CARD_CLICK_REGIONS = {
+    "cross": (420, 130, 730, 250),
+    "same": (755, 130, 1065, 250),
+}
 
 MATCH_THRESHOLD = 0.80
 OCR_MIN_CONFIDENCE = 0.60
@@ -61,6 +70,16 @@ LOGIN_ACTION_DELAY_SECONDS = 1.0
 ENTER_GAME_RETRY_SECONDS = 3.0
 ENTER_GAME_DISAPPEAR_CONFIRM_FRAMES = 2
 VALID_SYSTEMS = ("IOS", "Android")
+VALID_REGIONS = ("same", "cross")
+REGION_NAMES = {
+    "same": "狐之宴",
+    "cross": "砂狐乐园",
+}
+REGION_OCR_ALIASES = {
+    "same": ("狐之宴",),
+    # 兼容用户旧配置或 OCR 偶发把“砂”识别成“沙”。
+    "cross": ("砂狐乐园", "沙狐乐园"),
+}
 
 Rect = Tuple[int, int, int, int]
 
@@ -76,6 +95,21 @@ def normalize_system(system: str) -> Optional[str]:
         "安卓": "Android",
     }
     return aliases.get(str(system).strip().lower())
+
+
+def normalize_region(region: str) -> Optional[str]:
+    aliases = {
+        "same": "same",
+        "home": "same",
+        "normal": "same",
+        "同区": "same",
+        "狐之宴": "same",
+        "cross": "cross",
+        "跨区": "cross",
+        "砂狐乐园": "cross",
+        "沙狐乐园": "cross",
+    }
+    return aliases.get(str(region).strip().lower())
 
 
 def _get_ocr_engine():
@@ -274,6 +308,122 @@ def _ocr_texts_in_region(frame, region: Rect) -> list[tuple[str, float]]:
     return texts
 
 
+def _recognize_current_region(frame) -> tuple[Optional[str], list[str]]:
+    recognized = _ocr_texts_in_region(frame, SERVER_TEXT_REGION)
+    texts = [text for text, _ in recognized]
+    for region, aliases in REGION_OCR_ALIASES.items():
+        matches = [
+            confidence
+            for text, confidence in recognized
+            if any(alias in text.replace(" ", "") for alias in aliases)
+            and confidence >= OCR_MIN_CONFIDENCE
+        ]
+        if not matches:
+            continue
+        confidence = max(matches)
+        LOGGER.match(
+            "当前区服",
+            f"OCR:{REGION_NAMES[region]}",
+            confidence,
+            OCR_MIN_CONFIDENCE,
+            SERVER_TEXT_REGION,
+            search_region=SERVER_TEXT_REGION,
+        )
+        return region, texts
+    return None, texts
+
+
+def _ensure_region(
+    system_name: str,
+    target_region: str,
+    timeout: float = LOGIN_STEP_WAIT_SECONDS,
+) -> bool:
+    """确认进入游戏页区服；不一致时打开选择区域并点击目标固定卡位。"""
+    deadline = time.monotonic() + timeout
+    last_frame = None
+    last_texts: list[str] = []
+    selecting_region = False
+    last_switch_click = float("-inf")
+    last_card_click = float("-inf")
+    best_selection_score: Optional[float] = None
+    system_label = "IOS" if system_name == "ios" else "Android"
+    target_name = REGION_NAMES[target_region]
+
+    while time.monotonic() < deadline:
+        frame = _take_frame()
+        if frame is None:
+            continue
+        last_frame = frame
+
+        login_score, login_rect = _match(frame, "login")
+        if login_rect is not None:
+            print(f"区服确认前再次识别到登录按钮，匹配分数 {login_score:.3f}")
+            _click_region(login_rect, "登录")
+            selecting_region = False
+            time.sleep(LOGIN_ACTION_DELAY_SECONDS)
+            continue
+
+        system_score, system_rect = _match(frame, system_name)
+        if system_rect is not None:
+            print(
+                f"区服确认前仍识别到{system_label}系统，"
+                f"匹配分数 {system_score:.3f}，重新点击"
+            )
+            _click_region(system_rect, f"{system_label} 系统")
+            selecting_region = False
+            time.sleep(LOGIN_ACTION_DELAY_SECONDS)
+            continue
+
+        selection_score, selection_rect = _match(frame, "region_selection")
+        if selection_score is not None and (
+            best_selection_score is None or selection_score > best_selection_score
+        ):
+            best_selection_score = selection_score
+        if selection_rect is not None:
+            selecting_region = True
+            now = time.monotonic()
+            if now - last_card_click >= ENTER_GAME_RETRY_SECONDS:
+                print(
+                    f"识别到选择区域，匹配分数 {selection_score:.3f}，"
+                    f"点击{target_name}角色卡"
+                )
+                _click_region(
+                    REGION_CARD_CLICK_REGIONS[target_region],
+                    f"切换到{target_name}",
+                )
+                last_card_click = now
+                time.sleep(LOGIN_ACTION_DELAY_SECONDS)
+            continue
+
+        current_region, last_texts = _recognize_current_region(frame)
+        if current_region == target_region:
+            print(f"当前区服已确认是{target_name}")
+            return True
+        if current_region is None:
+            continue
+
+        current_name = REGION_NAMES[current_region]
+        now = time.monotonic()
+        if selecting_region:
+            # 选择页消失但仍显示旧区时，等待页面刷新；超时后重新打开切换。
+            if now - last_card_click < ENTER_GAME_RETRY_SECONDS:
+                continue
+            selecting_region = False
+        if now - last_switch_click >= ENTER_GAME_RETRY_SECONDS:
+            print(f"当前区服为{current_name}，目标为{target_name}，点击切换")
+            _click_region(REGION_SWITCH_CLICK_REGION, "切换区服")
+            last_switch_click = now
+            time.sleep(LOGIN_ACTION_DELAY_SECONDS)
+
+    print(
+        f"[ERROR] {timeout:.0f} 秒内未切换到{target_name}，"
+        f"最后区服 OCR 结果: {last_texts}，"
+        f"选择区域最高分 {_score_text(best_selection_score)}"
+    )
+    _save_timeout_screenshot(f"wait_region_{target_region}", last_frame)
+    return False
+
+
 def _wait_and_enter_game(
     system_name: str,
     timeout: float = LOGIN_STEP_WAIT_SECONDS,
@@ -362,22 +512,38 @@ def _wait_and_enter_game(
     return False
 
 
-def run(system: str = "IOS") -> bool:
+def run(system: str = "IOS", region: str = "same") -> bool:
     """登录当前界面已选中的账号，仅负责指定的一个系统。"""
     normalized_system = normalize_system(system)
     if normalized_system is None:
         print(f"[ERROR] 不支持的系统 {system!r}，仅支持 {VALID_SYSTEMS}")
         return False
+    normalized_region = normalize_region(region)
+    if normalized_region is None:
+        print(f"[ERROR] 不支持的区服 {region!r}，仅支持 {VALID_REGIONS}")
+        return False
 
     utils.connect_to_mumu()
-    print(f"开始登录当前账号的 {normalized_system} 系统")
+    print(
+        f"开始登录当前账号的 {normalized_system} 系统 / "
+        f"{REGION_NAMES[normalized_region]}"
+    )
     template_name = normalized_system.lower()
     if not _wait_and_select_system(template_name, LOGIN_STEP_WAIT_SECONDS):
+        return False
+    if not _ensure_region(
+        template_name,
+        normalized_region,
+        LOGIN_STEP_WAIT_SECONDS,
+    ):
         return False
     if not _wait_and_enter_game(template_name, LOGIN_STEP_WAIT_SECONDS):
         return False
 
-    print(f"当前账号的 {normalized_system} 系统已点击进入游戏")
+    print(
+        f"当前账号的 {normalized_system} 系统 / "
+        f"{REGION_NAMES[normalized_region]}已点击进入游戏"
+    )
     return True
 
 if __name__ == "__main__":

@@ -5,13 +5,12 @@ from __future__ import annotations
 import json
 import os
 import re
-import urllib.error
-import urllib.parse
-import urllib.request
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Callable, Optional
+
+import requests
 
 
 ENV_NAME = "SERVERCHAN_SENDKEY"
@@ -86,7 +85,7 @@ def send_serverchan(
     *,
     send_key: Optional[str] = None,
     timeout: float = 10.0,
-    opener: Callable[..., Any] = urllib.request.urlopen,
+    requester: Callable[..., Any] = requests.post,
 ) -> dict[str, Any]:
     """POST one ServerChan message without exposing its SendKey in errors."""
 
@@ -97,25 +96,48 @@ def send_serverchan(
         send_key if send_key is not None else get_serverchan_sendkey()
     ).strip()
     endpoint = serverchan_endpoint(key)
-    body = urllib.parse.urlencode({"title": title, "desp": str(desp)}).encode()
-    request = urllib.request.Request(
-        endpoint,
-        data=body,
-        headers={"Content-Type": "application/x-www-form-urlencoded"},
-        method="POST",
-    )
     try:
-        with opener(request, timeout=timeout) as response:
-            payload = json.loads(response.read().decode("utf-8"))
-    except urllib.error.HTTPError as exc:
-        raise ServerChanError(f"Server酱请求失败（HTTP {exc.code}）") from None
-    except (urllib.error.URLError, TimeoutError, OSError):
+        response = requester(
+            endpoint,
+            json={"title": title, "desp": str(desp)},
+            headers={
+                "Content-Type": "application/json;charset=utf-8",
+                "Accept": "application/json",
+            },
+            timeout=timeout,
+        )
+    except requests.RequestException:
         raise ServerChanError("Server酱请求失败，请检查网络后重试") from None
-    except (UnicodeDecodeError, json.JSONDecodeError):
-        raise ServerChanError("Server酱返回了无法解析的数据") from None
+
+    try:
+        payload = response.json()
+    except (ValueError, json.JSONDecodeError):
+        payload = None
+
+    if response.status_code >= 400:
+        detail = ""
+        if isinstance(payload, dict):
+            detail = str(payload.get("message") or payload.get("msg") or "")
+        if not detail:
+            detail = str(getattr(response, "text", "") or "")
+            detail = re.sub(r"<[^>]+>", " ", detail)
+        detail = " ".join(detail.split()).replace(key, "***")[:160]
+        if not detail:
+            detail = "网关未返回原因，请检查 SendKey 是否仍然有效"
+        raise ServerChanError(
+            f"Server酱请求失败（HTTP {response.status_code}）：{detail}"
+        )
+
+    if payload is None:
+        raise ServerChanError("Server酱返回了无法解析的数据")
     if not isinstance(payload, dict) or payload.get("code") != 0:
         code = payload.get("code") if isinstance(payload, dict) else "unknown"
-        raise ServerChanError(f"Server酱发送失败（code={code}）")
+        detail = ""
+        if isinstance(payload, dict):
+            detail = str(payload.get("message") or payload.get("msg") or "")
+        detail = " ".join(detail.split()).replace(key, "***")[:160]
+        suffix = f"：{detail}" if detail else ""
+        raise ServerChanError(f"Server酱发送失败（code={code}）{suffix}")
     return payload
 
 
@@ -131,8 +153,14 @@ def _parse_time(value: Any, now: datetime) -> Optional[datetime]:
     return parsed.astimezone(now.tzinfo)
 
 
-def _record(system_state: dict[str, Any], task_name: str) -> dict[str, Any]:
+def _record(
+    system_state: dict[str, Any],
+    task_name: str,
+    region_key: Optional[str] = None,
+) -> dict[str, Any]:
     value = system_state.get(task_name)
+    if region_key is not None and isinstance(value, dict):
+        value = value.get(region_key)
     return value if isinstance(value, dict) else {}
 
 
@@ -171,13 +199,22 @@ def build_detection_summary(
         if isinstance(system_state, dict)
     ]
     slot_start = notification_slot(now)
-    bounty_targets = [state for state in systems if _enabled(state, BOUNTY_TASK)]
+    bounty_targets = [
+        (system_state, "同区")
+        for system_state in systems
+        if _enabled(system_state, BOUNTY_TASK)
+    ]
+    bounty_targets.extend(
+        (system_state, "跨区")
+        for system_state in systems
+        if system_state.get("cross_region_enabled") is True
+    )
     if not bounty_targets:
         return None
 
     bounty_counts = {result: 0 for result in BOUNTY_RESULTS}
-    for system_state in bounty_targets:
-        record = _record(system_state, BOUNTY_TASK)
+    for system_state, region_key in bounty_targets:
+        record = _record(system_state, BOUNTY_TASK, region_key)
         checked = _parse_time(record.get("time"), now)
         result = record.get("bounty_result")
         if checked is None or checked < slot_start or result not in bounty_counts:

@@ -14,8 +14,8 @@ env/
 DEVELOPMENT_GUIDE.md
 
 # User-specific runtime state and machine paths
-account_status.json
-ui_settings.json
+config/account_status.json
+config/ui_settings.json
 cfg.txt
 serverchan_notification_state.json
 .env
