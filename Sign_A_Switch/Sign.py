@@ -56,10 +56,15 @@ ENTER_GAME_TEXT_REGION = (500, 540, 780, 640)
 ENTER_GAME_CLICK_REGION = (555, 570, 725, 625)
 SERVER_TEXT_REGION = (520, 490, 715, 550)
 REGION_SWITCH_CLICK_REGION = (720, 510, 815, 540)
-# 选择区域页布局固定：左侧砂狐乐园，右侧狐之宴。
+# 选择区域页的卡片顺序并不稳定；仅 OCR 卡片顶部区名，再点击对应整张卡片。
 REGION_CARD_CLICK_REGIONS = {
-    "cross": (420, 130, 730, 250),
-    "same": (755, 130, 1065, 250),
+    "left": (420, 130, 730, 250),
+    "right": (755, 130, 1065, 250),
+}
+REGION_CARD_NAME_OCR_REGIONS = {
+    # 高度止于时间文字上方，横向避开头像，只保留区名。
+    "left": (515, 140, 660, 176),
+    "right": (845, 140, 990, 176),
 }
 
 MATCH_THRESHOLD = 0.80
@@ -333,18 +338,56 @@ def _recognize_current_region(frame) -> tuple[Optional[str], list[str]]:
     return None, texts
 
 
+def _recognize_region_cards(
+    frame,
+) -> tuple[dict[str, str], dict[str, list[str]]]:
+    """分别 OCR 左右卡片的区名窄条，返回卡位到区服的映射。"""
+    card_regions: dict[str, str] = {}
+    card_texts: dict[str, list[str]] = {}
+
+    for position, ocr_region in REGION_CARD_NAME_OCR_REGIONS.items():
+        recognized = _ocr_texts_in_region(frame, ocr_region)
+        card_texts[position] = [text for text, _ in recognized]
+        candidates: list[tuple[float, str]] = []
+        for region, aliases in REGION_OCR_ALIASES.items():
+            for text, confidence in recognized:
+                normalized_text = text.replace(" ", "")
+                if (
+                    confidence >= OCR_MIN_CONFIDENCE
+                    and any(alias in normalized_text for alias in aliases)
+                ):
+                    candidates.append((confidence, region))
+
+        if not candidates:
+            continue
+        confidence, region = max(candidates)
+        card_regions[position] = region
+        LOGGER.match(
+            "选择区域",
+            f"OCR:{position}:{REGION_NAMES[region]}",
+            confidence,
+            OCR_MIN_CONFIDENCE,
+            REGION_CARD_CLICK_REGIONS[position],
+            search_region=ocr_region,
+        )
+
+    return card_regions, card_texts
+
+
 def _ensure_region(
     system_name: str,
     target_region: str,
     timeout: float = LOGIN_STEP_WAIT_SECONDS,
 ) -> bool:
-    """确认进入游戏页区服；不一致时打开选择区域并点击目标固定卡位。"""
+    """确认进入游戏页区服；不一致时 OCR 两张角色卡并点击目标区服。"""
     deadline = time.monotonic() + timeout
     last_frame = None
     last_texts: list[str] = []
     selecting_region = False
     last_switch_click = float("-inf")
     last_card_click = float("-inf")
+    last_card_ocr_attempt = float("-inf")
+    last_card_texts: dict[str, list[str]] = {}
     best_selection_score: Optional[float] = None
     system_label = "IOS" if system_name == "ios" else "Android"
     target_name = REGION_NAMES[target_region]
@@ -382,17 +425,36 @@ def _ensure_region(
         if selection_rect is not None:
             selecting_region = True
             now = time.monotonic()
-            if now - last_card_click >= ENTER_GAME_RETRY_SECONDS:
-                print(
-                    f"识别到选择区域，匹配分数 {selection_score:.3f}，"
-                    f"点击{target_name}角色卡"
-                )
-                _click_region(
-                    REGION_CARD_CLICK_REGIONS[target_region],
-                    f"切换到{target_name}",
-                )
-                last_card_click = now
-                time.sleep(LOGIN_ACTION_DELAY_SECONDS)
+            if now - last_card_ocr_attempt >= ENTER_GAME_RETRY_SECONDS:
+                last_card_ocr_attempt = now
+                card_regions, last_card_texts = _recognize_region_cards(frame)
+                target_positions = [
+                    position
+                    for position, region in card_regions.items()
+                    if region == target_region
+                ]
+                if len(target_positions) == 1:
+                    position = target_positions[0]
+                    print(
+                        f"识别到选择区域，匹配分数 {selection_score:.3f}；"
+                        f"{position} 卡片 OCR 为{target_name}，执行点击"
+                    )
+                    _click_region(
+                        REGION_CARD_CLICK_REGIONS[position],
+                        f"切换到{target_name}",
+                    )
+                    last_card_click = now
+                    time.sleep(LOGIN_ACTION_DELAY_SECONDS)
+                elif len(target_positions) > 1:
+                    print(
+                        f"[WARN] 左右卡片均被识别为{target_name}，"
+                        f"本轮不点击；OCR 结果: {last_card_texts}"
+                    )
+                else:
+                    print(
+                        f"[WARN] 两张卡片均未确认是{target_name}，"
+                        f"本轮不点击；OCR 结果: {last_card_texts}"
+                    )
             continue
 
         current_region, last_texts = _recognize_current_region(frame)
@@ -418,6 +480,7 @@ def _ensure_region(
     print(
         f"[ERROR] {timeout:.0f} 秒内未切换到{target_name}，"
         f"最后区服 OCR 结果: {last_texts}，"
+        f"卡片 OCR 结果: {last_card_texts}，"
         f"选择区域最高分 {_score_text(best_selection_score)}"
     )
     _save_timeout_screenshot(f"wait_region_{target_region}", last_frame)

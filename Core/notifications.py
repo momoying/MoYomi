@@ -16,7 +16,7 @@ import requests
 ENV_NAME = "SERVERCHAN_SENDKEY"
 PROJECT_DIR = Path(__file__).resolve().parent.parent
 ENV_PATH = PROJECT_DIR / ".env"
-STATE_PATH = PROJECT_DIR / "serverchan_notification_state.json"
+STATE_PATH = Path(__file__).resolve().parent / "serverchan_notification_state.json"
 BOUNTY_TASK = "bounty_checked"
 MERCHANT_TASK = "merchant_checked"
 BOUNTY_RESULTS = {

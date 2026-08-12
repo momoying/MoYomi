@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import queue
 import unittest
+from types import SimpleNamespace
 
 import ui
 
@@ -73,6 +74,39 @@ class UiLogPumpTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn(("INFO", "first"), dashboard.rendered_logs)
         self.assertIn(("INFO", "second"), dashboard.rendered_logs)
         self.assertGreaterEqual(dashboard.page.update_calls, 2)
+
+
+class UiWorkerFinishedTests(unittest.TestCase):
+    def test_failure_rebuilds_cards_and_clears_transient_current_task(self) -> None:
+        dashboard = ui.AssistantDashboard.__new__(ui.AssistantDashboard)
+        dashboard.running = True
+        dashboard.current_key = ("account", "IOS")
+        dashboard.start_button = SimpleNamespace(
+            disabled=True,
+            content="停止",
+            icon=None,
+            bgcolor=None,
+            color=None,
+        )
+        dashboard.refresh_button = SimpleNamespace(disabled=True)
+        dashboard.tool_start_button = SimpleNamespace(disabled=True)
+        dashboard.running_badge = SimpleNamespace(visible=True)
+        disabled_states: list[bool] = []
+        refreshes: list[bool] = []
+        logs: list[tuple[str, str]] = []
+        dashboard._set_global_settings_disabled = disabled_states.append
+        dashboard.refresh_cards = lambda update=False: refreshes.append(update) or True
+        dashboard._append_log_now = lambda level, message: logs.append(
+            (level, message)
+        )
+
+        dashboard._apply_worker_finished(success=False, stopped=False)
+
+        self.assertFalse(dashboard.running)
+        self.assertIsNone(dashboard.current_key)
+        self.assertEqual(refreshes, [False])
+        self.assertEqual(disabled_states, [False])
+        self.assertTrue(any(level == "ERROR" and "界面已复位" in msg for level, msg in logs))
 
 
 if __name__ == "__main__":

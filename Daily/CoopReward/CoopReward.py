@@ -12,6 +12,7 @@ import cv2
 SCRIPT_DIR = Path(__file__).resolve().parent
 DAILY_DIR = SCRIPT_DIR.parent
 PROJECT_ROOT = DAILY_DIR.parent
+RECOVERY_ASSET_DIR = PROJECT_ROOT / "Core" / "task_timeout_recovery_assets"
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
@@ -21,6 +22,7 @@ from Core.logging import TaskLogger
 
 LOGGER = TaskLogger("协战奖励")
 print = LOGGER.legacy_print
+BATTLE_COMPLETED_RECOVERY_REQUIRED = "battle_completed_recovery_required"
 
 
 SCREENSHOT_INTERVAL = 0.5
@@ -42,6 +44,8 @@ TEMPLATES = {
     "challenge": str(SCRIPT_DIR / "challenge.png"),
     "victory_transition": str(SCRIPT_DIR / "victory_transition.png"),
     "win": str(SCRIPT_DIR / "win.png"),
+    "reward_recovery_red": str(RECOVERY_ASSET_DIR / "close_red.png"),
+    "reward_recovery_pink": str(RECOVERY_ASSET_DIR / "close_pink.png"),
     "courtyard_back": str(SCRIPT_DIR / "courtyard_back.png"),
 }
 
@@ -59,6 +63,8 @@ REGIONS = {
     "challenge": ((1080, 480), (1280, 720)),
     "victory_transition": ((180, 40), (1080, 420)),
     "win": ((350, 300), (850, 680)),
+    "reward_recovery_red": ((0, 0), (1280, 720)),
+    "reward_recovery_pink": ((0, 0), (1280, 720)),
     "courtyard_back": ((60, 0), (180, 100)),
 }
 
@@ -76,6 +82,8 @@ MATCH_THRESHOLDS = {
     "challenge": 0.90,
     "victory_transition": 0.90,
     "win": 0.90,
+    "reward_recovery_red": 0.80,
+    "reward_recovery_pink": 0.80,
     "courtyard_back": 0.90,
 }
 
@@ -87,6 +95,8 @@ BONUS_WAIT_SECONDS = 20.0
 BONUS_DISMISS_WAIT_SECONDS = 8.0
 CHALLENGE_WAIT_SECONDS = 15.0
 BATTLE_WAIT_SECONDS = 300.0
+REWARD_STALL_SECONDS = 5.0
+REWARD_RECOVERY_WAIT_SECONDS = 15.0
 RETURN_WAIT_SECONDS = 30.0
 MAX_FLOOR_SWIPES = 6
 MAX_BONUS_SWIPES = 6
@@ -105,6 +115,10 @@ FINISH_BLANK_AREAS = {
 VICTORY_TRANSITION_CLICK_AREA = (1030, 540, 1250, 700)
 VICTORY_TRANSITION_CLICK_COUNT = (2, 3)
 VICTORY_TRANSITION_CLICK_INTERVAL = (0.1, 0.3)
+REWARD_RECOVERY_BUTTONS = (
+    ("reward_recovery_red", "红色交叉剑按钮"),
+    ("reward_recovery_pink", "粉色交叉剑按钮"),
+)
 BONUS_PANEL_BLANK_AREAS = {
     "左侧": (250, 180, 340, 500),
     "右侧": (940, 180, 1060, 500),
@@ -781,10 +795,29 @@ def _rapid_click_victory_transition() -> int:
     return click_count
 
 
+def _try_reward_stall_recovery(frame) -> Optional[str]:
+    """全屏检查两种交叉剑按钮，点击匹配分数最高的一个。"""
+    best_match: Optional[tuple[float, Rect, str]] = None
+    for name, label in REWARD_RECOVERY_BUTTONS:
+        score, rect = _match(frame, name)
+        if score is None or rect is None:
+            continue
+        if best_match is None or score > best_match[0]:
+            best_match = (score, rect, label)
+
+    if best_match is None:
+        return None
+
+    score, rect, label = best_match
+    print(f"特殊恢复识别到{label}，全屏匹配分数 {score:.3f}，执行点击")
+    _click_rect(rect, f"奖励未出现特殊恢复/{label}")
+    return label
+
+
 def collect_battle_rewards(
     initial_frame=None,
     timeout: Optional[float] = None,
-) -> bool:
+) -> bool | str:
     """识别胜利过渡和奖励结算，快速跳过后返回御魂挑战页。"""
     previous_interval = utils.config.get("screenshot_speed", SCREENSHOT_INTERVAL)
     utils.config["screenshot_speed"] = BATTLE_SCREENSHOT_INTERVAL
@@ -794,7 +827,13 @@ def collect_battle_rewards(
     best_score: Optional[float] = None
     best_transition_score: Optional[float] = None
     transition_clicked = False
+    transition_seen_at: Optional[float] = None
     win_seen = False
+    reward_recovery_attempted = False
+    reward_recovery_deadline: Optional[float] = None
+    reward_cleared_at: Optional[float] = None
+    post_reward_recovery_attempted = False
+    post_reward_recovery_deadline: Optional[float] = None
     frame = initial_frame
 
     print(f"战斗进行中，每 {BATTLE_SCREENSHOT_INTERVAL:g} 秒检查一次胜利结算")
@@ -822,9 +861,7 @@ def collect_battle_rewards(
                     )
                     _rapid_click_victory_transition()
                     transition_clicked = True
-                frame = None
-                time.sleep(SCREENSHOT_INTERVAL)
-                continue
+                    transition_seen_at = time.monotonic()
 
             score, rect = _match(frame, "win")
             if score is not None and (best_score is None or score > best_score):
@@ -839,15 +876,113 @@ def collect_battle_rewards(
                 frame = None
                 continue
 
+            now = time.monotonic()
             if win_seen:
-                print("胜利模板已消失，协战结算完成")
-                return True
+                challenge_score, challenge_rect = _match(frame, "challenge")
+                if challenge_rect is not None:
+                    print(
+                        "奖励领取完成，已返回御魂挑战页，"
+                        f"挑战按钮匹配分数 {challenge_score:.3f}"
+                    )
+                    return True
+
+                if reward_cleared_at is None:
+                    reward_cleared_at = now
+                    print(
+                        "胜利奖励模板已消失，等待返回御魂挑战页；"
+                        f"超过 {REWARD_STALL_SECONDS:g} 秒将执行特殊恢复"
+                    )
+
+                if (
+                    not post_reward_recovery_attempted
+                    and now - reward_cleared_at >= REWARD_STALL_SECONDS
+                ):
+                    post_reward_recovery_attempted = True
+                    print(
+                        "[WARN] 奖励领取完成后仍未返回挑战页，"
+                        "开始全屏检查特殊恢复按钮"
+                    )
+                    recovered_by = _try_reward_stall_recovery(frame)
+                    if recovered_by is None:
+                        print(
+                            "[ERROR] 奖励领取后的特殊恢复未识别到"
+                            "红色或粉色交叉剑按钮，"
+                            "交由中控执行正常超时恢复"
+                        )
+                        return BATTLE_COMPLETED_RECOVERY_REQUIRED
+                    post_reward_recovery_deadline = (
+                        time.monotonic() + REWARD_RECOVERY_WAIT_SECONDS
+                    )
+                    print(
+                        f"奖励领取后已点击{recovered_by}，最多再等待 "
+                        f"{REWARD_RECOVERY_WAIT_SECONDS:g} 秒返回挑战页"
+                    )
+
+                if (
+                    post_reward_recovery_deadline is not None
+                    and time.monotonic() >= post_reward_recovery_deadline
+                ):
+                    print(
+                        "[ERROR] 奖励领取后点击特殊恢复按钮，"
+                        "仍未返回挑战页，交由中控执行正常超时恢复"
+                    )
+                    return BATTLE_COMPLETED_RECOVERY_REQUIRED
+
+                frame = None
+                time.sleep(SCREENSHOT_INTERVAL)
+                continue
+
+            if (
+                transition_clicked
+                and transition_seen_at is not None
+                and not reward_recovery_attempted
+                and now - transition_seen_at >= REWARD_STALL_SECONDS
+            ):
+                reward_recovery_attempted = True
+                print(
+                    "[WARN] 已识别到协战胜利，但 "
+                    f"{REWARD_STALL_SECONDS:g} 秒仍未出现奖励，"
+                    "开始全屏检查特殊恢复按钮"
+                )
+                recovered_by = _try_reward_stall_recovery(frame)
+                if recovered_by is None:
+                    print(
+                        "[ERROR] 特殊恢复未识别到红色或粉色交叉剑按钮，"
+                        "交由中控执行正常超时恢复"
+                    )
+                    return False
+                reward_recovery_deadline = (
+                    time.monotonic() + REWARD_RECOVERY_WAIT_SECONDS
+                )
+                print(
+                    f"已点击{recovered_by}，最多再等待 "
+                    f"{REWARD_RECOVERY_WAIT_SECONDS:g} 秒出现奖励"
+                )
+
+            if (
+                reward_recovery_deadline is not None
+                and time.monotonic() >= reward_recovery_deadline
+            ):
+                print(
+                    "[ERROR] 点击特殊恢复按钮后仍未出现奖励，"
+                    "交由中控执行正常超时恢复"
+                )
+                return False
+
             frame = None
+            if transition_rect is not None:
+                time.sleep(SCREENSHOT_INTERVAL)
 
         print(
             "[ERROR] 等待协战胜利超时，过渡页/奖励页最高分 "
             f"{_score_text(best_transition_score)}/{_score_text(best_score)}"
         )
+        if win_seen:
+            print(
+                "[WARN] 本场奖励界面已经出现，战斗场次按完成记录，"
+                "交由中控执行专属退场恢复"
+            )
+            return BATTLE_COMPLETED_RECOVERY_REQUIRED
         return False
     finally:
         utils.config["screenshot_speed"] = previous_interval
@@ -907,7 +1042,7 @@ def _return_to_courtyard() -> bool:
 def run(
     enable_bonus: bool = True,
     disable_bonus_after: bool = False,
-) -> bool:
+) -> bool | str:
     utils.connect_to_mumu()
     print("开始协战奖励任务")
 
@@ -934,14 +1069,29 @@ def run(
 
     if not _wait_and_click("challenge", "挑战", CHALLENGE_WAIT_SECONDS):
         return False
-    if not collect_battle_rewards():
+    battle_result = collect_battle_rewards()
+    if battle_result == BATTLE_COMPLETED_RECOVERY_REQUIRED:
+        print(
+            "[WARN] 本场协战已经结算，但未能回到挑战页；"
+            "保留本场进度并交由中控执行专属退场恢复"
+        )
+        return BATTLE_COMPLETED_RECOVERY_REQUIRED
+    if not battle_result:
         return False
 
     if disable_bonus_after:
         if not _disable_soul_bonus():
-            return False
+            print(
+                "[WARN] 本账号最后一场协战已经结算，但关闭加成失败；"
+                "按任务完成但退场失败处理"
+            )
+            return BATTLE_COMPLETED_RECOVERY_REQUIRED
         if not _return_to_courtyard():
-            return False
+            print(
+                "[WARN] 本账号最后一场协战已经结算，但返回庭院失败；"
+                "按任务完成但退场失败处理"
+            )
+            return BATTLE_COMPLETED_RECOVERY_REQUIRED
         print("本账号协战场次全部完成，已关闭加成并返回庭院")
     else:
         print("本场协战完成，保留在御魂十层挑战页面")

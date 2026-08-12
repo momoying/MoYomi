@@ -9,7 +9,7 @@ import os
 import random
 import sys
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any, Callable, Optional
 
@@ -23,13 +23,21 @@ print = LOGGER.legacy_print
 
 HELPER_DIR = Path(__file__).resolve().parent
 DAILY_TASKS_DIR = HELPER_DIR / "Daily"
+WEEKLY_TASKS_DIR = HELPER_DIR / "Weekly"
 PROJECT_ROOT = HELPER_DIR.parent
 CONFIG_DIR = HELPER_DIR / "config"
 STATUS_PATH = CONFIG_DIR / "account_status.json"
+WEEKLY_STATUS_PATH = CONFIG_DIR / "weekly_account_status.json"
+DAILY_MODE = "daily"
+WEEKLY_MODE = "weekly"
+VALID_TASK_MODES = {DAILY_MODE, WEEKLY_MODE}
+CONSIGNMENT_HOUSE_TASK = "consignment_house"
+WEEKLY_STATUS_VERSION = 1
 HEART_TEAM_TASK = "heart_team"
 HEART_TEAM_BATTLES_COMPLETED_CLEANUP_FAILED = (
     "battles_completed_cleanup_failed"
 )
+COOP_BATTLE_COMPLETED_RECOVERY_REQUIRED = "battle_completed_recovery_required"
 
 MODULE_PATHS = {
     "startup_recovery": HELPER_DIR / "Core" / "startup.py",
@@ -45,6 +53,9 @@ MODULE_PATHS = {
     "merchant_checked": DAILY_TASKS_DIR / "Merchant" / "Merchant.py",
     "guild_kirin_completed": DAILY_TASKS_DIR / "GuildKirin" / "GuildKirin.py",
     HEART_TEAM_TASK: DAILY_TASKS_DIR / "HeartTeam" / "HeartTeam.py",
+    CONSIGNMENT_HOUSE_TASK: (
+        WEEKLY_TASKS_DIR / "ConsignmentHouse" / "ConsignmentHouse.py"
+    ),
 }
 
 TASK_ORDER = (
@@ -81,6 +92,7 @@ TASK_LABELS = {
     "merchant_checked": "奸商检测",
     "guild_kirin_completed": "寮麒麟",
     HEART_TEAM_TASK: "同心队",
+    CONSIGNMENT_HOUSE_TASK: "寄售屋",
 }
 DEFAULT_TASK_ENABLED = {
     task_name: task_name != HEART_TEAM_TASK
@@ -89,7 +101,7 @@ DEFAULT_TASK_ENABLED = {
 
 BOUNTY_TASK = "bounty_checked"
 MERCHANT_TASK = "merchant_checked"
-STATUS_VERSION = 7
+STATUS_VERSION = 8
 SAME_REGION = "same"
 CROSS_REGION = "cross"
 VALID_REGIONS = (SAME_REGION, CROSS_REGION)
@@ -109,6 +121,7 @@ TASK_RESULT_FIELDS = {
 TASK_TIME_FIELDS = {
     BOUNTY_TASK: "time",
     MERCHANT_TASK: "time",
+    "coop_reward_completed": "completed_at",
     HEART_TEAM_TASK: "completed_at",
 }
 HEART_TEAM_ROLES = {"leader", "member"}
@@ -136,6 +149,9 @@ MERCHANT_RESULT_DETAILS = {
 }
 MERCHANT_STOP_RESULT = "blue_ticket_50"
 MERCHANT_SKIPPED_RESULT = "skipped_after_50"
+CONSIGNMENT_ALREADY_PURCHASED = "already_purchased"
+CONSIGNMENT_PURCHASED = "purchased"
+CONSIGNMENT_ERROR = "error"
 
 
 @dataclass
@@ -147,6 +163,9 @@ class ControllerServices:
     startup_recovery: Optional[Callable[[], Any]] = None
     task_timeout_recovery: Optional[Callable[[Any], Any]] = None
     task_recovery_retries: int = 1
+    task_failure_recoveries: dict[str, Callable[[Any], Any]] = field(
+        default_factory=dict
+    )
     task_completion_recoveries: dict[str, Callable[[Any], Any]] = field(
         default_factory=dict
     )
@@ -214,9 +233,10 @@ def build_services(
     )
     switch_module = _load_module("switch", MODULE_PATHS["switch"])
     sign_module = _load_module("sign", MODULE_PATHS["sign"])
+    task_module_names = (*TASK_ORDER, CONSIGNMENT_HOUSE_TASK)
     task_modules = {
         key: _load_module(key, MODULE_PATHS[key])
-        for key in TASK_ORDER
+        for key in task_module_names
     }
     utility_modules = {
         id(module_utils): module_utils
@@ -267,11 +287,34 @@ def build_services(
             else (
                 module.check_merchant
                 if key == MERCHANT_TASK
-                else module.run
+                else (
+                    module.check_consignment_house
+                    if key == CONSIGNMENT_HOUSE_TASK
+                    else module.run
+                )
             )
         )
         for key, module in task_modules.items()
     }
+
+    def recover_generic(stop_event=None):
+        return task_recovery_module.recover_to_courtyard(
+            stop_event=stop_event,
+            timeout=max(0.1, float(recovery_timeout_seconds)),
+            unknown_grace=max(
+                0.1,
+                float(recovery_unknown_grace_seconds),
+            ),
+            screenshot_keep_count=screenshot_keep_count,
+        )
+
+    def recover_heart_team(stop_event=None):
+        return task_modules[HEART_TEAM_TASK].recover_to_courtyard(
+            stop_event=stop_event,
+            timeout=max(1.0, float(recovery_timeout_seconds)),
+            fallback=recover_generic,
+        )
+
     return ControllerServices(
         select_account=lambda account, exit_current: switch_module.select_account(
             account,
@@ -293,25 +336,21 @@ def build_services(
                 timeout=60.0,
             ),
         ),
-        task_timeout_recovery=lambda stop_event=None: (
-            task_recovery_module.recover_to_courtyard(
-                stop_event=stop_event,
-                timeout=max(0.1, float(recovery_timeout_seconds)),
-                unknown_grace=max(
-                    0.1,
-                    float(recovery_unknown_grace_seconds),
-                ),
-                screenshot_keep_count=screenshot_keep_count,
-            )
-        ),
+        task_timeout_recovery=recover_generic,
         task_recovery_retries=max(0, int(recovery_retry_count)),
-        task_completion_recoveries={
-            HEART_TEAM_TASK: lambda stop_event=None: task_modules[
-                HEART_TEAM_TASK
-            ].recover_after_completed_battles(
+        task_failure_recoveries={
+            MAIL_TASK: lambda stop_event=None: task_modules[
+                MAIL_TASK
+            ].recover_to_courtyard(
                 stop_event=stop_event,
-                timeout=max(1.0, float(recovery_timeout_seconds)),
-            )
+                fallback=recover_generic,
+            ),
+            COOP_REWARD_TASK: recover_generic,
+            HEART_TEAM_TASK: recover_heart_team,
+        },
+        task_completion_recoveries={
+            COOP_REWARD_TASK: recover_generic,
+            HEART_TEAM_TASK: recover_heart_team,
         },
     )
 
@@ -323,7 +362,12 @@ def _empty_system_state() -> dict[str, Any]:
             "同区": None,
             "跨区": None,
         },
-        "coop_reward_completed": None,
+        "coop_reward_completed": {
+            "completed_at": None,
+            "battle_date": None,
+            "battles_completed": 0,
+            "battle_target": 0,
+        },
         "experience_monster_completed": None,
         "one_tap_daily_completed": None,
         "bounty_checked": {
@@ -344,6 +388,9 @@ def _empty_system_state() -> dict[str, Any]:
         HEART_TEAM_TASK: {
             "role": None,
             "completed_at": None,
+            "battle_date": None,
+            "battles_completed": 0,
+            "battle_target": 0,
         },
         "latest_task_completed_at": None,
         "task_enabled": dict(DEFAULT_TASK_ENABLED),
@@ -361,6 +408,24 @@ def _normalize_timestamp(value: Any) -> Optional[str]:
     return value
 
 
+def _normalize_battle_date(value: Any) -> Optional[str]:
+    if not isinstance(value, str):
+        return None
+    try:
+        return date.fromisoformat(value).isoformat()
+    except ValueError:
+        return None
+
+
+def _normalized_nonnegative_int(value: Any) -> int:
+    if isinstance(value, bool):
+        return 0
+    try:
+        return max(0, int(value))
+    except (TypeError, ValueError):
+        return 0
+
+
 def _region_task_value(
     system_state: dict[str, Any],
     task_name: str,
@@ -368,6 +433,11 @@ def _region_task_value(
 ) -> Any:
     value = system_state.get(task_name)
     if task_name not in CROSS_REGION_TASKS:
+        if task_name == MERCHANT_TASK and isinstance(value, dict):
+            # 兼容曾被错误写成“同区/跨区”的奸商记录。
+            malformed_record = value.get(REGION_STATE_KEYS[SAME_REGION])
+            if isinstance(malformed_record, dict):
+                return malformed_record
         return value
 
     region_key = REGION_STATE_KEYS[region]
@@ -420,8 +490,26 @@ def set_task_record_result(
     result: Optional[str],
     region: str = SAME_REGION,
 ) -> None:
-    """写入指定区服的聚合任务结果，同时保留已有时间。"""
+    """写入聚合任务结果，同时保留已有时间及任务自身的数据结构。"""
     result_field = TASK_RESULT_FIELDS[task_name]
+    if task_name not in CROSS_REGION_TASKS:
+        current_record = system_state.get(task_name)
+        has_region_keys = isinstance(current_record, dict) and any(
+            key in current_record for key in REGION_STATE_KEYS.values()
+        )
+        record = (
+            dict(current_record)
+            if isinstance(current_record, dict) and not has_region_keys
+            else {}
+        )
+        time_field = TASK_TIME_FIELDS.get(task_name)
+        if time_field is not None:
+            record[time_field] = task_record_time(system_state, task_name)
+        record[result_field] = result
+        system_state[task_name] = record
+        system_state.pop(result_field, None)
+        return
+
     records = system_state.get(task_name)
     if not isinstance(records, dict) or not any(
         key in records for key in REGION_STATE_KEYS.values()
@@ -457,10 +545,66 @@ def set_heart_team_role(
 ) -> None:
     """保存同心队身份并保留已有完成时间。"""
     normalized_role = role if role in HEART_TEAM_ROLES else None
-    system_state[HEART_TEAM_TASK] = {
-        "role": normalized_role,
-        "completed_at": task_record_time(system_state, HEART_TEAM_TASK),
-    }
+    current = system_state.get(HEART_TEAM_TASK)
+    record = dict(current) if isinstance(current, dict) else {}
+    record.update(
+        {
+            "role": normalized_role,
+            "completed_at": task_record_time(system_state, HEART_TEAM_TASK),
+            "battle_date": _normalize_battle_date(record.get("battle_date")),
+            "battles_completed": _normalized_nonnegative_int(
+                record.get("battles_completed")
+            ),
+            "battle_target": _normalized_nonnegative_int(
+                record.get("battle_target")
+            ),
+        }
+    )
+    system_state[HEART_TEAM_TASK] = record
+
+
+def battle_progress(
+    system_state: dict[str, Any],
+    task_name: str,
+    now: datetime,
+) -> tuple[int, int]:
+    """读取当前本地日期的战斗进度；跨日记录自动视为零。"""
+    record = system_state.get(task_name)
+    if not isinstance(record, dict):
+        return 0, 0
+    battle_date = _normalize_battle_date(record.get("battle_date"))
+    if battle_date != now.astimezone().date().isoformat():
+        return 0, 0
+    completed = _normalized_nonnegative_int(record.get("battles_completed"))
+    target = _normalized_nonnegative_int(record.get("battle_target"))
+    return min(completed, target) if target else completed, target
+
+
+def set_battle_progress(
+    system_state: dict[str, Any],
+    task_name: str,
+    now: datetime,
+    completed: int,
+    target: int,
+) -> None:
+    """保存当前账号/系统当天的战斗场次，并保留任务其他字段。"""
+    current = system_state.get(task_name)
+    record = dict(current) if isinstance(current, dict) else {}
+    target = _normalized_nonnegative_int(target)
+    completed = min(_normalized_nonnegative_int(completed), target)
+    record.update(
+        {
+            "battle_date": now.astimezone().date().isoformat(),
+            "battles_completed": completed,
+            "battle_target": target,
+        }
+    )
+    system_state[task_name] = record
+
+
+def heart_team_battle_target(now: datetime) -> int:
+    """周一至周四 20 场，周五至周日 30 场。"""
+    return 30 if now.astimezone().weekday() >= 4 else 20
 
 
 def cross_region_is_enabled(system_state: dict[str, Any]) -> bool:
@@ -479,7 +623,20 @@ def _normalize_system_state(raw: Any) -> dict[str, Any]:
     state["one_tap_daily_completed"] = _normalize_timestamp(
         raw.get("one_tap_daily_completed")
     )
-    state[COOP_REWARD_TASK] = _normalize_timestamp(raw.get(COOP_REWARD_TASK))
+    raw_coop = raw.get(COOP_REWARD_TASK)
+    raw_coop_record = raw_coop if isinstance(raw_coop, dict) else {}
+    state[COOP_REWARD_TASK] = {
+        "completed_at": task_record_time(raw, COOP_REWARD_TASK),
+        "battle_date": _normalize_battle_date(
+            raw_coop_record.get("battle_date")
+        ),
+        "battles_completed": _normalized_nonnegative_int(
+            raw_coop_record.get("battles_completed")
+        ),
+        "battle_target": _normalized_nonnegative_int(
+            raw_coop_record.get("battle_target")
+        ),
+    }
     state["guild_kirin_completed"] = _normalize_timestamp(
         raw.get("guild_kirin_completed")
     )
@@ -514,9 +671,20 @@ def _normalize_system_state(raw: Any) -> dict[str, Any]:
         "time": merchant_time,
         "merchant_result": normalized_merchant_result,
     }
+    raw_heart = raw.get(HEART_TEAM_TASK)
+    raw_heart_record = raw_heart if isinstance(raw_heart, dict) else {}
     state[HEART_TEAM_TASK] = {
         "role": heart_team_role(raw),
         "completed_at": task_record_time(raw, HEART_TEAM_TASK),
+        "battle_date": _normalize_battle_date(
+            raw_heart_record.get("battle_date")
+        ),
+        "battles_completed": _normalized_nonnegative_int(
+            raw_heart_record.get("battles_completed")
+        ),
+        "battle_target": _normalized_nonnegative_int(
+            raw_heart_record.get("battle_target")
+        ),
     }
     state["latest_task_completed_at"] = _normalize_timestamp(
         raw.get("latest_task_completed_at")
@@ -610,6 +778,137 @@ def save_state(state: dict[str, Any], path: Path = STATUS_PATH) -> None:
         encoding="utf-8",
     )
     os.replace(temporary_path, path)
+
+
+def _empty_weekly_system_state() -> dict[str, Any]:
+    return {
+        CONSIGNMENT_HOUSE_TASK: {
+            "completed_at": None,
+            "result": None,
+        }
+    }
+
+
+def _normalize_weekly_system_state(raw: Any) -> dict[str, Any]:
+    raw = raw if isinstance(raw, dict) else {}
+    record = raw.get(CONSIGNMENT_HOUSE_TASK)
+    record = record if isinstance(record, dict) else {}
+    completed_at = _normalize_timestamp(record.get("completed_at"))
+    result = record.get("result")
+    if result not in {
+        CONSIGNMENT_ALREADY_PURCHASED,
+        CONSIGNMENT_PURCHASED,
+    }:
+        result = None
+        # 只有明确的购买结果才允许完成时间阻止再次检查。
+        completed_at = None
+    return {
+        CONSIGNMENT_HOUSE_TASK: {
+            "completed_at": completed_at,
+            "result": result,
+        }
+    }
+
+
+def load_weekly_state(
+    path: Path = WEEKLY_STATUS_PATH,
+    daily_state: Optional[dict[str, Any]] = None,
+) -> tuple[dict[str, Any], bool]:
+    """加载周常状态，并按日常账号清单补齐缺失节点、保留旧节点。"""
+    path = Path(path)
+    if path.is_file():
+        with path.open("r", encoding="utf-8") as file:
+            raw = json.load(file)
+    else:
+        raw = {}
+
+    migrated = raw.get("version") != WEEKLY_STATUS_VERSION
+    raw_accounts = raw.get("accounts")
+    raw_accounts = raw_accounts if isinstance(raw_accounts, dict) else {}
+    accounts: dict[str, Any] = {}
+    for account_name, account_raw in raw_accounts.items():
+        account_raw = account_raw if isinstance(account_raw, dict) else {}
+        raw_systems = account_raw.get("systems")
+        raw_systems = raw_systems if isinstance(raw_systems, dict) else {}
+        systems = {
+            str(system): _normalize_weekly_system_state(system_state)
+            for system, system_state in raw_systems.items()
+        }
+        accounts[str(account_name)] = {"systems": systems}
+        if account_raw != accounts[str(account_name)]:
+            migrated = True
+
+    if daily_state is None:
+        daily_state, _ = load_state(STATUS_PATH)
+    for account_name, account_state in daily_state["accounts"].items():
+        weekly_account = accounts.setdefault(account_name, {"systems": {}})
+        systems = weekly_account.setdefault("systems", {})
+        for system in account_state["systems"]:
+            if system not in systems:
+                systems[system] = _empty_weekly_system_state()
+                migrated = True
+
+    state = {"version": WEEKLY_STATUS_VERSION, "accounts": accounts}
+    return state, migrated
+
+
+def save_weekly_state(
+    state: dict[str, Any],
+    path: Path = WEEKLY_STATUS_PATH,
+) -> None:
+    save_state(state, path)
+
+
+def weekly_consignment_is_due(record: dict[str, Any], now: datetime) -> bool:
+    """寄售屋在本地时间每周一 00:00 进入新周期。"""
+    if now.tzinfo is None:
+        now = now.astimezone()
+    completed = _parse_timestamp(record.get("completed_at"), now)
+    week_start = (now - timedelta(days=now.weekday())).replace(
+        hour=0,
+        minute=0,
+        second=0,
+        microsecond=0,
+    )
+    return completed is None or completed < week_start
+
+
+def weekly_task_record(
+    weekly_state: dict[str, Any],
+    account_name: str,
+    system: str,
+) -> dict[str, Any]:
+    return weekly_state["accounts"][account_name]["systems"][system][
+        CONSIGNMENT_HOUSE_TASK
+    ]
+
+
+def build_weekly_work_queue(
+    daily_state: dict[str, Any],
+    weekly_state: dict[str, Any],
+    now: datetime,
+    *,
+    shuffle_accounts: Callable[[list[str]], None] = random.shuffle,
+    shuffle_systems: Callable[[list[str]], None] = random.shuffle,
+) -> list[WorkItem]:
+    """只按日常状态中的现役账号/系统生成寄售屋周常队列。"""
+    account_names = list(daily_state["accounts"])
+    shuffle_accounts(account_names)
+    queue: list[WorkItem] = []
+    for account_name in account_names:
+        system_names = list(daily_state["accounts"][account_name]["systems"])
+        shuffle_systems(system_names)
+        for system in system_names:
+            record = weekly_task_record(weekly_state, account_name, system)
+            if weekly_consignment_is_due(record, now):
+                queue.append(
+                    WorkItem(
+                        account_name,
+                        system,
+                        (TaskWork(CONSIGNMENT_HOUSE_TASK, 1),),
+                    )
+                )
+    return queue
 
 
 def _parse_timestamp(value: Any, now: datetime) -> Optional[datetime]:
@@ -863,8 +1162,18 @@ def task_is_due(
         return completed is None or completed.date() != now.date()
 
     if task_name == COOP_REWARD_TASK:
-        completed = _parse_timestamp(system_state.get(COOP_REWARD_TASK), now)
-        return completed is None or completed.date() != now.date()
+        completed = _parse_timestamp(
+            task_record_time(system_state, COOP_REWARD_TASK),
+            now,
+        )
+        if completed is not None and completed.date() == now.date():
+            return False
+        battles_completed, battle_target = battle_progress(
+            system_state,
+            COOP_REWARD_TASK,
+            now,
+        )
+        return battle_target <= 0 or battles_completed < battle_target
 
     if task_name == MAIL_TASK:
         return mail_is_due(system_state, now)
@@ -895,13 +1204,23 @@ def task_is_due(
             task_record_time(system_state, HEART_TEAM_TASK),
             now,
         )
-        if completed is None:
-            return True
         if role == "member":
             # 一键预存可不限次数连续补充；成员每三天集中补满一次，
             # 减少额外登录和 OCR 时间。
+            if completed is None:
+                return True
             return (now.date() - completed.date()).days >= 3
-        return completed.date() != now.date()
+        battles_completed, battle_target = battle_progress(
+            system_state,
+            HEART_TEAM_TASK,
+            now,
+        )
+        if (
+            battle_target == heart_team_battle_target(now)
+            and battles_completed >= battle_target
+        ):
+            return False
+        return completed is None or completed.date() != now.date()
 
     raise KeyError(f"未知任务: {task_name}")
 
@@ -939,11 +1258,15 @@ def _ordered_due_tasks(
         if not task_is_enabled(system_state, task_name):
             continue
         if task_name == COOP_REWARD_TASK:
-            run_count = (
-                coop_reward_runs
-                if task_is_due(COOP_REWARD_TASK, system_state, now)
-                else 0
+            if not task_is_due(COOP_REWARD_TASK, system_state, now):
+                continue
+            completed_battles, saved_target = battle_progress(
+                system_state,
+                COOP_REWARD_TASK,
+                now,
             )
+            target = saved_target or coop_reward_runs
+            run_count = max(0, target - completed_battles)
         else:
             run_count = task_runs_due(task_name, system_state, now)
         if run_count > 0:
@@ -1173,15 +1496,26 @@ def _invoke_task_runner(
     run_count: int,
     system_state: dict[str, Any],
     region: str = SAME_REGION,
+    *,
+    recovery_retry: bool = False,
+    completed_battles: int = 0,
+    on_battle_completed: Optional[Callable[[int, int], None]] = None,
 ) -> tuple[bool, Optional[str]]:
     """执行一次任务调用，并统一解释不同任务的返回值。"""
     task_result: Optional[str] = None
     if task_name == COOP_REWARD_TASK:
         raw_result = runner(
-            enable_bonus=run_index == 1,
+            # 普通恢复会回到庭院；无论当前是第几场，恢复后的重试都
+            # 必须重新走探索、御魂入口和加成准备流程。
+            enable_bonus=run_index == 1 or recovery_retry,
             disable_bonus_after=run_index == run_count,
         )
-        success = bool(raw_result)
+        raw_value = getattr(raw_result, "value", raw_result)
+        if raw_value == COOP_BATTLE_COMPLETED_RECOVERY_REQUIRED:
+            task_result = COOP_BATTLE_COMPLETED_RECOVERY_REQUIRED
+            success = True
+        else:
+            success = raw_result is True
     elif task_name == BOUNTY_TASK:
         raw_result = runner()
         task_result = getattr(raw_result, "value", str(raw_result))
@@ -1191,7 +1525,11 @@ def _invoke_task_runner(
         task_result = getattr(raw_result, "value", str(raw_result))
         success = task_result in MERCHANT_RESULT_DETAILS
     elif task_name == HEART_TEAM_TASK:
-        raw_result = runner(role=heart_team_role(system_state))
+        raw_result = runner(
+            role=heart_team_role(system_state),
+            completed_battles=completed_battles,
+            on_battle_completed=on_battle_completed,
+        )
         raw_value = getattr(raw_result, "value", raw_result)
         if raw_value == HEART_TEAM_BATTLES_COMPLETED_CLEANUP_FAILED:
             # 战斗目标已经完成，不能走普通失败重试，否则会重复打 20/30 场。
@@ -1227,6 +1565,242 @@ def _run_task_recovery(
         return False, f"超时恢复发生异常：{exc}"
 
 
+def _services_from_runtime_settings(
+    runtime_settings: Optional[dict[str, Any]],
+) -> ControllerServices:
+    settings = runtime_settings or {}
+    return build_services(
+        screenshot_interval=settings.get("screenshot_interval"),
+        battle_detection_interval=settings.get("battle_detection_interval"),
+        mumu_index=settings.get("mumu_index"),
+        adb_port=settings.get("adb_port"),
+        adb_path=settings.get("adb_path"),
+        mumu_path=settings.get("mumu_path"),
+        recovery_retry_count=settings.get("recovery_retry_count", 1),
+        recovery_timeout_seconds=settings.get("recovery_timeout_seconds", 90.0),
+        recovery_unknown_grace_seconds=settings.get(
+            "recovery_unknown_grace_seconds", 10.0
+        ),
+        timeout_screenshot_keep_count=settings.get(
+            "timeout_screenshot_keep_count", 20
+        ),
+    )
+
+
+def run_weekly(
+    status_path: Path = STATUS_PATH,
+    weekly_status_path: Path = WEEKLY_STATUS_PATH,
+    services: Optional[ControllerServices] = None,
+    now_provider: Callable[[], datetime] = lambda: datetime.now().astimezone(),
+    event_callback: Optional[EventCallback] = None,
+    stop_event: Any = None,
+    runtime_settings: Optional[dict[str, Any]] = None,
+) -> bool:
+    """执行到期寄售屋周常，并在购买或确认已购买后返回庭院。"""
+    try:
+        daily_state, daily_migrated = load_state(status_path)
+        if daily_migrated:
+            save_state(daily_state, status_path)
+        weekly_state, weekly_migrated = load_weekly_state(
+            weekly_status_path,
+            daily_state,
+        )
+        if weekly_migrated or not Path(weekly_status_path).is_file():
+            save_weekly_state(weekly_state, weekly_status_path)
+    except (OSError, ValueError, json.JSONDecodeError) as exc:
+        print(f"[ERROR] 无法加载周常状态: {exc}")
+        _emit_event(event_callback, "error", phase="load_state", message=str(exc))
+        return False
+
+    queue_time = now_provider()
+    work_queue = build_weekly_work_queue(daily_state, weekly_state, queue_time)
+    _emit_event(
+        event_callback,
+        "queue_built",
+        queue=work_queue,
+        created_at=queue_time,
+        task_mode=WEEKLY_MODE,
+    )
+    if not work_queue:
+        print("当前没有到期周常任务，无需登录任何账号")
+        _emit_event(event_callback, "controller_completed", empty=True)
+        return True
+
+    print("待执行周常队列：")
+    for index, item in enumerate(work_queue, start=1):
+        print(f"  {index}. {item.account_name} / {item.system}: 寄售屋")
+
+    try:
+        services = services or _services_from_runtime_settings(runtime_settings)
+    except (OSError, ImportError) as exc:
+        print(f"[ERROR] 无法加载 Weekly 任务模块: {exc}")
+        _emit_event(event_callback, "error", phase="load_modules", message=str(exc))
+        return False
+
+    if services.startup_recovery is not None:
+        try:
+            recovery_result = services.startup_recovery()
+            recovery_success = bool(getattr(recovery_result, "success", recovery_result))
+            recovery_message = str(
+                getattr(recovery_result, "reason", "启动界面恢复失败")
+            )
+        except Exception as exc:
+            recovery_success = False
+            recovery_message = f"启动界面恢复发生异常：{exc}"
+        if not recovery_success:
+            first_item = work_queue[0]
+            _emit_event(
+                event_callback,
+                "error",
+                account=first_item.account_name,
+                system=first_item.system,
+                phase="startup_recovery",
+                message=recovery_message,
+            )
+            return False
+
+    previous_account: Optional[str] = None
+    first_login = True
+    runner = services.task_runners[CONSIGNMENT_HOUSE_TASK]
+    for item in work_queue:
+        if stop_event is not None and stop_event.is_set():
+            print("周常中控已安全停止")
+            _emit_event(event_callback, "controller_stopped")
+            return False
+
+        account_name = item.account_name
+        system = item.system
+        _emit_event(
+            event_callback,
+            "account_started",
+            account=account_name,
+            system=system,
+            region=SAME_REGION,
+            phase="select_account",
+        )
+        if first_login:
+            selected = services.select_account(account_name, False)
+        elif previous_account != account_name:
+            selected = services.select_account(account_name, True)
+        else:
+            selected = account_name if services.exit_to_login() else None
+        if selected is None:
+            message = f"无法选中账号 {account_name}"
+            _emit_event(
+                event_callback,
+                "error",
+                account=account_name,
+                system=system,
+                phase="select_account",
+                message=message,
+            )
+            return False
+
+        _emit_event(
+            event_callback,
+            "account_phase",
+            account=account_name,
+            system=system,
+            phase="sign_in",
+        )
+        if not services.sign_in(system, SAME_REGION):
+            message = f"{account_name} / {system} / 狐之宴 登录失败"
+            _emit_event(
+                event_callback,
+                "error",
+                account=account_name,
+                system=system,
+                phase="sign_in",
+                message=message,
+            )
+            return False
+
+        _emit_event(
+            event_callback,
+            "task_started",
+            account=account_name,
+            system=system,
+            region=SAME_REGION,
+            task=CONSIGNMENT_HOUSE_TASK,
+            run_index=1,
+            run_count=1,
+        )
+        result = CONSIGNMENT_ERROR
+        max_attempts = max(1, services.task_recovery_retries + 1)
+        for attempt_index in range(1, max_attempts + 1):
+            try:
+                raw_result = runner()
+                result = getattr(raw_result, "value", str(raw_result))
+            except Exception as exc:
+                result = CONSIGNMENT_ERROR
+                failure_message = f"寄售屋执行异常：{exc}"
+            else:
+                failure_message = "寄售屋执行失败"
+
+            if result in {
+                CONSIGNMENT_ALREADY_PURCHASED,
+                CONSIGNMENT_PURCHASED,
+            }:
+                break
+            if attempt_index >= max_attempts:
+                _emit_event(
+                    event_callback,
+                    "error",
+                    account=account_name,
+                    system=system,
+                    task=CONSIGNMENT_HOUSE_TASK,
+                    phase="task",
+                    message=failure_message,
+                )
+                return False
+            if services.task_timeout_recovery is None:
+                return False
+            recovered, recovery_message = _run_task_recovery(
+                services.task_timeout_recovery,
+                stop_event,
+            )
+            if not recovered:
+                _emit_event(
+                    event_callback,
+                    "error",
+                    account=account_name,
+                    system=system,
+                    task=CONSIGNMENT_HOUSE_TASK,
+                    phase="task_recovery",
+                    message=f"{failure_message}；{recovery_message}",
+                )
+                return False
+            print(f"[INFO] {recovery_message}，重新执行寄售屋")
+
+        completed_at = now_provider().astimezone().isoformat(timespec="seconds")
+        record = weekly_task_record(weekly_state, account_name, system)
+        record["completed_at"] = completed_at
+        record["result"] = result
+        save_weekly_state(weekly_state, weekly_status_path)
+        detail = (
+            "本周购买完成"
+            if result == CONSIGNMENT_PURCHASED
+            else "本周已购买"
+        )
+        _emit_event(
+            event_callback,
+            "task_completed",
+            account=account_name,
+            system=system,
+            region=SAME_REGION,
+            task=CONSIGNMENT_HOUSE_TASK,
+            timestamp=completed_at,
+            detail=detail,
+            result=result,
+        )
+        previous_account = account_name
+        first_login = False
+
+    print("\n全部账号与系统的到期周常任务已处理完成")
+    _emit_event(event_callback, "controller_completed", empty=False)
+    return True
+
+
 def run(
     status_path: Path = STATUS_PATH,
     services: Optional[ControllerServices] = None,
@@ -1234,8 +1808,22 @@ def run(
     event_callback: Optional[EventCallback] = None,
     stop_event: Any = None,
     runtime_settings: Optional[dict[str, Any]] = None,
+    task_mode: str = DAILY_MODE,
+    weekly_status_path: Path = WEEKLY_STATUS_PATH,
 ) -> bool:
     """按 JSON 顺序登录每个账号的每个系统，并执行到期任务。"""
+    if task_mode not in VALID_TASK_MODES:
+        raise ValueError(f"不支持的任务模式: {task_mode}")
+    if task_mode == WEEKLY_MODE:
+        return run_weekly(
+            status_path=status_path,
+            weekly_status_path=weekly_status_path,
+            services=services,
+            now_provider=now_provider,
+            event_callback=event_callback,
+            stop_event=stop_event,
+            runtime_settings=runtime_settings,
+        )
     try:
         state, migrated = load_state(status_path)
     except (OSError, ValueError, json.JSONDecodeError) as exc:
@@ -1479,6 +2067,48 @@ def run(
             label = TASK_LABELS[task_name]
             runner = services.task_runners[task_name]
             task_result: Optional[str] = None
+            progress_now = now_provider()
+            coop_completed_before = 0
+            coop_target = 0
+            coop_reenter_next = False
+            heart_completed_before = 0
+            heart_progress_callback: Optional[Callable[[int, int], None]] = None
+            if task_name == COOP_REWARD_TASK:
+                coop_completed_before, saved_target = battle_progress(
+                    system_state,
+                    COOP_REWARD_TASK,
+                    progress_now,
+                )
+                coop_target = saved_target or (coop_completed_before + run_count)
+                if coop_completed_before:
+                    print(
+                        f"协战奖励继承当前账号进度 "
+                        f"{coop_completed_before}/{coop_target} 场"
+                    )
+            elif (
+                task_name == HEART_TEAM_TASK
+                and heart_team_role(system_state) == "leader"
+            ):
+                heart_completed_before, _ = battle_progress(
+                    system_state,
+                    HEART_TEAM_TASK,
+                    progress_now,
+                )
+
+                def save_heart_progress(completed: int, target: int) -> None:
+                    nonlocal heart_completed_before
+                    heart_completed_before = completed
+                    set_battle_progress(
+                        system_state,
+                        HEART_TEAM_TASK,
+                        now_provider(),
+                        completed,
+                        target,
+                    )
+                    save_state(state, status_path)
+                    print(f"同心队当前账号进度已保存：{completed}/{target} 场")
+
+                heart_progress_callback = save_heart_progress
             for run_index in range(1, run_count + 1):
                 if stop_event is not None and stop_event.is_set():
                     print("Daily 中控已安全停止")
@@ -1507,9 +2137,13 @@ def run(
                             run_count,
                             system_state,
                             region,
+                            recovery_retry=(
+                                attempt_index > 1 or coop_reenter_next
+                            ),
+                            completed_battles=heart_completed_before,
+                            on_battle_completed=heart_progress_callback,
                         )
-                        if attempt_result is not None:
-                            task_result = attempt_result
+                        task_result = attempt_result
                         failure_message = f"{label}执行失败"
                     except KeyboardInterrupt:
                         raise
@@ -1518,6 +2152,56 @@ def run(
                         failure_message = f"{label}发生异常: {exc}"
 
                     if success:
+                        if task_name == COOP_REWARD_TASK:
+                            coop_reenter_next = False
+                        if task_name == COOP_REWARD_TASK:
+                            completed = coop_completed_before + run_index
+                            set_battle_progress(
+                                system_state,
+                                COOP_REWARD_TASK,
+                                now_provider(),
+                                completed,
+                                coop_target,
+                            )
+                            save_state(state, status_path)
+                            print(
+                                f"协战奖励当前账号进度已保存："
+                                f"{completed}/{coop_target} 场"
+                            )
+
+                        if (
+                            task_name == COOP_REWARD_TASK
+                            and task_result
+                            == COOP_BATTLE_COMPLETED_RECOVERY_REQUIRED
+                            and run_index < run_count
+                        ):
+                            cleanup_recovery = (
+                                services.task_completion_recoveries.get(
+                                    COOP_REWARD_TASK
+                                )
+                            )
+                            if cleanup_recovery is None:
+                                print(
+                                    "[ERROR] 本场协战已经完成但未配置专属退场恢复"
+                                )
+                                return False
+                            recovered, recovery_message = _run_task_recovery(
+                                cleanup_recovery,
+                                stop_event,
+                            )
+                            if not recovered:
+                                print(
+                                    "[ERROR] 本场协战已经完成并保存进度，但"
+                                    f"{recovery_message}"
+                                )
+                                return False
+                            print(
+                                f"[SUCCESS] {recovery_message}，"
+                                "从庭院继续下一场协战"
+                            )
+                            coop_reenter_next = True
+                            task_result = None
+
                         if attempt_index > 1:
                             print(
                                 f"[SUCCESS] {label}恢复后第 "
@@ -1533,14 +2217,42 @@ def run(
                             )
                         break
 
+                    failure_recovery = services.task_failure_recoveries.get(
+                        task_name,
+                        services.task_timeout_recovery,
+                    )
                     can_recover = (
                         attempt_index <= services.task_recovery_retries
-                        and services.task_timeout_recovery is not None
+                        and failure_recovery is not None
                         and not (
                             stop_event is not None and stop_event.is_set()
                         )
                     )
                     if not can_recover:
+                        can_cleanup_before_stop = (
+                            failure_recovery is not None
+                            and not (
+                                stop_event is not None and stop_event.is_set()
+                            )
+                        )
+                        if can_cleanup_before_stop:
+                            print(
+                                f"[WARN] {label}已无剩余重试次数，"
+                                "停止前先恢复到庭院"
+                            )
+                            recovered, recovery_message = _run_task_recovery(
+                                failure_recovery,
+                                stop_event,
+                            )
+                            if recovered:
+                                print(
+                                    f"[INFO] {recovery_message}；"
+                                    f"{label}仍按失败处理，不写入完成时间"
+                                )
+                            else:
+                                failure_message = (
+                                    f"{failure_message}；{recovery_message}"
+                                )
                         print(f"[ERROR] {failure_message}，不写入完成时间")
                         _emit_event(
                             event_callback,
@@ -1567,7 +2279,7 @@ def run(
                         message=failure_message,
                     )
                     recovered, recovery_message = _run_task_recovery(
-                        services.task_timeout_recovery,
+                        failure_recovery,
                         stop_event,
                     )
                     if not recovered:
@@ -1643,17 +2355,23 @@ def run(
             if task_name in {BOUNTY_TASK, MERCHANT_TASK}:
                 try_detection_notification(now_provider())
 
+            cleanup_failure = None
             if (
                 task_name == HEART_TEAM_TASK
                 and task_result
                 == HEART_TEAM_BATTLES_COMPLETED_CLEANUP_FAILED
             ):
-                cleanup_failure = (
-                    "同心队战斗场数已经完成，但退出组队流程失败"
-                )
+                cleanup_failure = "同心队战斗场数已经完成，但退出组队流程失败"
+            elif (
+                task_name == COOP_REWARD_TASK
+                and task_result == COOP_BATTLE_COMPLETED_RECOVERY_REQUIRED
+            ):
+                cleanup_failure = "协战奖励场数已经完成，但奖励领取或退场流程失败"
+
+            if cleanup_failure is not None:
                 print(
                     f"[ERROR] {cleanup_failure}；完成时间已经写入，"
-                    "不会重新挑战，开始执行战后专属恢复"
+                    "不会重复挑战，开始执行任务专属恢复"
                 )
                 _emit_event(
                     event_callback,
@@ -1664,10 +2382,10 @@ def run(
                     message=cleanup_failure,
                 )
                 completion_recovery = services.task_completion_recoveries.get(
-                    HEART_TEAM_TASK
+                    task_name
                 )
                 if completion_recovery is None:
-                    message = "未配置同心队战后专属恢复，停止后续任务"
+                    message = f"未配置{label}完成后的专属恢复，停止后续任务"
                     print(f"[ERROR] {message}")
                     _emit_event(
                         event_callback,
@@ -1687,7 +2405,7 @@ def run(
                 if not recovered:
                     message = (
                         f"{cleanup_failure}；{recovery_message}。"
-                        "完成时间已保留，但为避免组队状态影响其他任务，"
+                        "完成时间已保留，但为避免残留界面影响其他任务，"
                         "中控停止继续执行"
                     )
                     print(f"[ERROR] {message}")
@@ -1704,7 +2422,7 @@ def run(
 
                 print(
                     f"[SUCCESS] {recovery_message}，"
-                    "组队残留已经清理，继续执行后续任务"
+                    f"{label}残留已经清理，继续执行后续任务"
                 )
                 _emit_event(
                     event_callback,

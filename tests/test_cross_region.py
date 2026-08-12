@@ -306,7 +306,33 @@ class BountySummaryTests(unittest.TestCase):
 
 
 class RegionLoginTests(unittest.TestCase):
-    def test_switch_to_same_region_clicks_fixed_right_card(self) -> None:
+    def test_region_card_ocr_uses_name_only_crops(self) -> None:
+        seen_regions = []
+
+        def fake_ocr(_frame, region):
+            seen_regions.append(region)
+            if region == Sign.REGION_CARD_NAME_OCR_REGIONS["left"]:
+                return [("砂狐乐园", 0.99)]
+            return [("狐之宴", 0.98)]
+
+        with (
+            patch.object(Sign, "_ocr_texts_in_region", side_effect=fake_ocr),
+            patch.object(Sign.LOGGER, "match"),
+        ):
+            card_regions, card_texts = Sign._recognize_region_cards(object())
+
+        self.assertEqual(card_regions, {"left": "cross", "right": "same"})
+        self.assertEqual(card_texts["left"], ["砂狐乐园"])
+        self.assertEqual(card_texts["right"], ["狐之宴"])
+        self.assertEqual(
+            seen_regions,
+            list(Sign.REGION_CARD_NAME_OCR_REGIONS.values()),
+        )
+        for left, top, right, bottom in seen_regions:
+            self.assertLessEqual(bottom - top, 36)
+            self.assertLessEqual(right - left, 145)
+
+    def test_switch_to_same_region_clicks_ocr_selected_right_card(self) -> None:
         frames = iter(["old-region", "selector", "new-region"])
         clicks: list[tuple[tuple[int, int, int, int], str]] = []
 
@@ -326,6 +352,14 @@ class RegionLoginTests(unittest.TestCase):
             patch.object(Sign, "_take_frame", side_effect=lambda: next(frames)),
             patch.object(Sign, "_match", side_effect=fake_match),
             patch.object(Sign, "_recognize_current_region", side_effect=fake_region),
+            patch.object(
+                Sign,
+                "_recognize_region_cards",
+                return_value=(
+                    {"left": "cross", "right": "same"},
+                    {"left": ["砂狐乐园"], "right": ["狐之宴"]},
+                ),
+            ),
             patch.object(
                 Sign,
                 "_click_region",
@@ -339,10 +373,10 @@ class RegionLoginTests(unittest.TestCase):
         self.assertEqual(clicks[0][0], Sign.REGION_SWITCH_CLICK_REGION)
         self.assertEqual(
             clicks[1][0],
-            Sign.REGION_CARD_CLICK_REGIONS["same"],
+            Sign.REGION_CARD_CLICK_REGIONS["right"],
         )
 
-    def test_switch_to_cross_region_clicks_fixed_left_card(self) -> None:
+    def test_switch_to_cross_region_clicks_ocr_selected_left_card(self) -> None:
         frames = iter(["old-region", "selector", "new-region"])
         clicks: list[tuple[tuple[int, int, int, int], str]] = []
 
@@ -364,6 +398,14 @@ class RegionLoginTests(unittest.TestCase):
             patch.object(Sign, "_recognize_current_region", side_effect=fake_region),
             patch.object(
                 Sign,
+                "_recognize_region_cards",
+                return_value=(
+                    {"left": "cross", "right": "same"},
+                    {"left": ["砂狐乐园"], "right": ["狐之宴"]},
+                ),
+            ),
+            patch.object(
+                Sign,
                 "_click_region",
                 side_effect=lambda rect, label: clicks.append((rect, label)),
             ),
@@ -375,7 +417,7 @@ class RegionLoginTests(unittest.TestCase):
         self.assertEqual(clicks[0][0], Sign.REGION_SWITCH_CLICK_REGION)
         self.assertEqual(
             clicks[1][0],
-            Sign.REGION_CARD_CLICK_REGIONS["cross"],
+            Sign.REGION_CARD_CLICK_REGIONS["left"],
         )
 
 

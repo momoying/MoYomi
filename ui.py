@@ -159,6 +159,7 @@ TASK_ICONS = {
     "merchant_checked": ft.Icons.STOREFRONT_ROUNDED,
     "guild_kirin_completed": ft.Icons.PETS_ROUNDED,
     controller.HEART_TEAM_TASK: ft.Icons.GROUPS_ROUNDED,
+    controller.CONSIGNMENT_HOUSE_TASK: ft.Icons.SELL_ROUNDED,
 }
 
 UI_TASK_ORDER = (
@@ -172,6 +173,7 @@ UI_TASK_ORDER = (
     "guild_kirin_completed",
     controller.HEART_TEAM_TASK,
 )
+WEEKLY_UI_TASK_ORDER = (controller.CONSIGNMENT_HOUSE_TASK,)
 
 
 def load_ui_settings(path: Path = SETTINGS_PATH) -> dict[str, Any]:
@@ -450,6 +452,7 @@ class AccountCardView:
         system: str,
         system_state: dict[str, Any],
         now: datetime,
+        task_mode: str = controller.DAILY_MODE,
     ) -> None:
         self.account = account
         self.system = system
@@ -457,14 +460,25 @@ class AccountCardView:
         self.status_text = ft.Text(size=11, color=COLORS["muted"])
         self.task_views: dict[str, TaskStatusView] = {}
 
-        for task_name in UI_TASK_ORDER:
-            enabled = controller.combined_task_is_enabled(system_state, task_name)
-            due_count = (
-                controller.combined_task_runs_due(task_name, system_state, now)
-                if enabled
-                else 0
-            )
-            available = controller.task_is_available(task_name, now)
+        task_order = (
+            WEEKLY_UI_TASK_ORDER
+            if task_mode == controller.WEEKLY_MODE
+            else UI_TASK_ORDER
+        )
+        for task_name in task_order:
+            if task_mode == controller.WEEKLY_MODE:
+                record = system_state[controller.CONSIGNMENT_HOUSE_TASK]
+                enabled = True
+                due_count = int(controller.weekly_consignment_is_due(record, now))
+                available = True
+            else:
+                enabled = controller.combined_task_is_enabled(system_state, task_name)
+                due_count = (
+                    controller.combined_task_runs_due(task_name, system_state, now)
+                    if enabled
+                    else 0
+                )
+                available = controller.task_is_available(task_name, now)
             completed_detail = None
             if task_name == controller.BOUNTY_TASK:
                 completed_detail = controller.combined_bounty_detail(system_state)
@@ -489,6 +503,12 @@ class AccountCardView:
                         if role == "member"
                         else "今日战斗已完成"
                     )
+                )
+            elif task_name == controller.CONSIGNMENT_HOUSE_TASK:
+                completed_detail = (
+                    "本周购买完成"
+                    if record.get("result") == controller.CONSIGNMENT_PURCHASED
+                    else "本周已购买"
                 )
             task_view = TaskStatusView(
                 task_name,
@@ -539,13 +559,13 @@ class AccountCardView:
             ),
         )
         task_grid = ft.ResponsiveRow(
-            [self.task_views[name].control for name in UI_TASK_ORDER],
+            [self.task_views[name].control for name in task_order],
             columns=12,
             spacing=8,
             run_spacing=8,
         )
         for control in task_grid.controls:
-            control.col = 6
+            control.col = 12 if task_mode == controller.WEEKLY_MODE else 6
 
         self.control = ft.Container(
             col={"xs": 12, "sm": 6, "md": 4},
@@ -636,6 +656,7 @@ class AssistantDashboard:
         self.running = False
         self.tool_running = False
         self.active_section = "daily"
+        self.task_mode = controller.DAILY_MODE
         self.active_settings_section = "global"
         self.active_tool = "story_skip"
         self.current_key: Optional[tuple[str, str]] = None
@@ -699,6 +720,13 @@ class AssistantDashboard:
             width=58,
             height=32,
             on_change=self._on_hide_unavailable_changed,
+        )
+        self.weekly_mode_switch = ft.Switch(
+            value=False,
+            active_color=COLORS["active"],
+            width=58,
+            height=32,
+            on_change=self._on_task_mode_changed,
         )
 
         self.cards_grid = ft.ResponsiveRow(
@@ -1240,6 +1268,20 @@ class AssistantDashboard:
     def _build_daily_page(self) -> ft.Control:
         task_filter = ft.Row(
             [
+                ft.Column(
+                    [
+                        ft.Text(
+                            "周常任务",
+                            size=12,
+                            color=COLORS["muted"],
+                            text_align=ft.TextAlign.CENTER,
+                        ),
+                        self.weekly_mode_switch,
+                    ],
+                    spacing=1,
+                    tight=True,
+                    horizontal_alignment=ft.CrossAxisAlignment.CENTER,
+                ),
                 ft.Container(width=1, height=46, bgcolor=COLORS["border"]),
                 ft.Column(
                     [
@@ -1277,7 +1319,7 @@ class AssistantDashboard:
             ),
         )
         log_panel = self._panel(
-            "日常任务日志",
+            "日常 / 周常任务日志",
             ft.Icons.TERMINAL_ROUNDED,
             self.log_view,
             expand=True,
@@ -2074,9 +2116,23 @@ class AssistantDashboard:
 
     def refresh_cards(self, update: bool = True) -> bool:
         try:
-            state, migrated = controller.load_state(controller.STATUS_PATH)
+            daily_state, migrated = controller.load_state(controller.STATUS_PATH)
             if migrated:
-                controller.save_state(state, controller.STATUS_PATH)
+                controller.save_state(daily_state, controller.STATUS_PATH)
+            if self.task_mode == controller.WEEKLY_MODE:
+                state, weekly_migrated = controller.load_weekly_state(
+                    controller.WEEKLY_STATUS_PATH,
+                    daily_state,
+                )
+                if weekly_migrated or not controller.WEEKLY_STATUS_PATH.is_file():
+                    controller.save_weekly_state(
+                        state,
+                        controller.WEEKLY_STATUS_PATH,
+                    )
+                active_accounts = daily_state["accounts"]
+            else:
+                state = daily_state
+                active_accounts = daily_state["accounts"]
         except Exception as exc:
             self.append_log("ERROR", f"无法读取账号状态：{exc}")
             return False
@@ -2084,9 +2140,16 @@ class AssistantDashboard:
         now = datetime.now().astimezone()
         self.cards.clear()
         self.cards_grid.controls.clear()
-        for account, account_state in state["accounts"].items():
-            for system, system_state in account_state["systems"].items():
-                card = AccountCardView(account, system, system_state, now)
+        for account, account_state in active_accounts.items():
+            for system in account_state["systems"]:
+                system_state = state["accounts"][account]["systems"][system]
+                card = AccountCardView(
+                    account,
+                    system,
+                    system_state,
+                    now,
+                    task_mode=self.task_mode,
+                )
                 self.cards[(account, system)] = card
                 self.cards_grid.controls.append(card.control)
         self._apply_task_visibility()
@@ -2112,7 +2175,12 @@ class AssistantDashboard:
         if self.running:
             return
         if self.refresh_cards():
-            self.append_log("INFO", "已重新读取 config/account_status.json")
+            status_file = (
+                "config/weekly_account_status.json"
+                if self.task_mode == controller.WEEKLY_MODE
+                else "config/account_status.json"
+            )
+            self.append_log("INFO", f"已重新读取 {status_file}")
 
     def _refresh_serverchan_status(self) -> None:
         configured = bool(get_serverchan_sendkey())
@@ -2191,6 +2259,19 @@ class AssistantDashboard:
             save_ui_settings(self.settings)
         except OSError as exc:
             self.append_log("ERROR", f"保存任务显示设置失败：{exc}")
+        self._safe_update()
+
+    def _on_task_mode_changed(self, _event: Any = None) -> None:
+        if self.running:
+            return
+        self.task_mode = (
+            controller.WEEKLY_MODE
+            if self.weekly_mode_switch.value
+            else controller.DAILY_MODE
+        )
+        self.refresh_cards(update=False)
+        label = "周常" if self.task_mode == controller.WEEKLY_MODE else "日常"
+        self.append_log("INFO", f"已切换到{label}任务")
         self._safe_update()
 
     def _wallpaper_box_fit(self) -> ft.BoxFit:
@@ -2859,12 +2940,14 @@ class AssistantDashboard:
         self.start_button.bgcolor = COLORS["error_bg"]
         self.start_button.color = COLORS["error"]
         self.refresh_button.disabled = True
+        self.weekly_mode_switch.disabled = True
         self._set_global_settings_disabled(True)
         self.tool_start_button.disabled = True
         self.running_badge.visible = True
-        self.running_badge_text.value = "一键长草运行中"
+        mode_label = "周常" if self.task_mode == controller.WEEKLY_MODE else "日常"
+        self.running_badge_text.value = f"{mode_label}任务运行中"
         self.settings_message.value = ""
-        self.append_log("INFO", "开始生成待执行队列")
+        self.append_log("INFO", f"开始生成{mode_label}待执行队列")
         self._safe_update()
         self.page.run_thread(self._controller_worker)
 
@@ -2894,6 +2977,7 @@ class AssistantDashboard:
                     event_callback=self.handle_controller_event,
                     stop_event=self.stop_event,
                     runtime_settings=self.settings,
+                    task_mode=self.task_mode,
                 )
         except Exception as exc:
             self.append_log("ERROR", f"中控未捕获异常：{exc}")
@@ -2910,7 +2994,11 @@ class AssistantDashboard:
                 )
             )
 
-    def _apply_worker_finished(self, success: bool, stopped: bool) -> None:
+    def _apply_worker_finished(
+        self,
+        success: bool,
+        stopped: bool,
+    ) -> None:
         """在 UI 事件循环中收尾，避免工作线程跨线程修改控件。"""
         self.running = False
         self.start_button.disabled = False
@@ -2919,14 +3007,25 @@ class AssistantDashboard:
         self.start_button.bgcolor = COLORS["active"]
         self.start_button.color = "#07111F"
         self.refresh_button.disabled = False
+        if hasattr(self, "weekly_mode_switch"):
+            self.weekly_mode_switch.disabled = False
         self._set_global_settings_disabled(False)
         self.tool_start_button.disabled = False
         self.running_badge.visible = False
+        # 无论成功、停止还是失败，都从持久化状态重建卡片。失败事件会
+        # 临时修改任务图标和卡片边框；若不重建，这些运行态控件会一直
+        # 残留，后续刷新布局时看起来像错位或卡住。
+        self.current_key = None
+        self.refresh_cards(update=False)
         if success:
-            self.refresh_cards(update=False)
             self._append_log_now("SUCCESS", "本轮到期任务已处理完成")
         elif stopped:
             self._append_log_now("WARN", "本轮任务已停止")
+        else:
+            self._append_log_now(
+                "ERROR",
+                "本轮执行失败，运行态界面已复位；错误详情请查看上方日志",
+            )
 
     def handle_controller_event(self, event: dict[str, Any]) -> None:
         """中控回调在工作线程执行，只负责将状态事件入队。"""

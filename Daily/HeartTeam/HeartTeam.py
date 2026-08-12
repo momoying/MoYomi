@@ -14,7 +14,7 @@ import sys
 import time
 from datetime import datetime
 from pathlib import Path
-from typing import Optional, Tuple
+from typing import Any, Callable, Optional, Tuple
 
 import cv2
 
@@ -35,6 +35,7 @@ print = LOGGER.legacy_print
 SCREENSHOT_INTERVAL = 0.5
 utils.config["screenshot_speed"] = SCREENSHOT_INTERVAL
 BATTLES_COMPLETED_CLEANUP_FAILED = "battles_completed_cleanup_failed"
+BATTLE_COMPLETED_RECOVERY_REQUIRED = "battle_completed_recovery_required"
 
 TEMPLATES = {
     "main": str(SCRIPT_DIR.parent / "CoopReward" / "explore.png"),
@@ -654,7 +655,7 @@ def _click_random_reward_side() -> None:
     _click_random_region(region, f"奖励页{side}安全空白区域")
 
 
-def collect_battle_rewards(timeout: Optional[float] = None) -> bool:
+def collect_battle_rewards(timeout: Optional[float] = None) -> bool | str:
     """处理一场胜利过渡和奖励页；每场最多触发一轮快速连点。"""
     previous_interval = utils.config.get("screenshot_speed", SCREENSHOT_INTERVAL)
     utils.config["screenshot_speed"] = BATTLE_SCREENSHOT_INTERVAL
@@ -720,20 +721,45 @@ def collect_battle_rewards(timeout: Optional[float] = None) -> bool:
             f"{_score_text(best_transition_score)}/"
             f"{_score_text(best_reward_score)}"
         )
+        if reward_seen:
+            print(
+                "[WARN] 本场奖励界面已经出现，战斗场次按完成记录，"
+                "交由中控执行同心队专属恢复"
+            )
+            return BATTLE_COMPLETED_RECOVERY_REQUIRED
         return False
     finally:
         utils.config["screenshot_speed"] = previous_interval
 
 
-def _run_battles() -> bool | str:
+def _run_battles(
+    completed_battles: int = 0,
+    on_battle_completed: Optional[Callable[[int, int], None]] = None,
+) -> bool | str:
     target_count = battle_target_count()
-    print(f"本日同心队计划战斗 {target_count} 场")
-    for battle_index in range(1, target_count + 1):
+    completed_battles = max(0, min(int(completed_battles), target_count))
+    if completed_battles:
+        print(
+            f"本日同心队计划战斗 {target_count} 场，"
+            f"继承当前账号已完成 {completed_battles} 场"
+        )
+    else:
+        print(f"本日同心队计划战斗 {target_count} 场")
+    for battle_index in range(completed_battles + 1, target_count + 1):
         print(f"准备第 {battle_index}/{target_count} 场同心队战斗")
         if not _wait_and_click("challenge", "挑战", PAGE_WAIT_SECONDS):
             return False
-        if not collect_battle_rewards():
+        battle_result = collect_battle_rewards()
+        if battle_result == BATTLE_COMPLETED_RECOVERY_REQUIRED:
+            if on_battle_completed is not None:
+                on_battle_completed(battle_index, target_count)
+            if battle_index == target_count:
+                return BATTLES_COMPLETED_CLEANUP_FAILED
             return False
+        if not battle_result:
+            return False
+        if on_battle_completed is not None:
+            on_battle_completed(battle_index, target_count)
         if not _wait_for_template(
             "challenge",
             "挑战界面",
@@ -1069,10 +1095,12 @@ def recover_after_completed_battles(
     stop_event=None,
     *,
     timeout: float = 90.0,
-) -> bool:
+    fallback: Optional[Callable[[Any], Any]] = None,
+) -> Any:
     """战斗已完成但退出失败时，从任意退出阶段解除组队并回到庭院。"""
     deadline = time.monotonic() + max(1.0, float(timeout))
     action_count = 0
+    unknown_since: Optional[float] = None
     print("开始同心队战后专属恢复：解除组队并返回庭院")
 
     while time.monotonic() < deadline:
@@ -1084,9 +1112,19 @@ def recover_after_completed_battles(
         if frame is None:
             continue
 
+        # 奖励页卡住时必须点击左右安全区，不能直接点击奖励袋或背景返回键。
+        _reward_score, reward_rect = _match(frame, "reward")
+        if reward_rect is not None:
+            unknown_since = None
+            _click_random_reward_side()
+            action_count += 1
+            time.sleep(SCREENSHOT_INTERVAL)
+            continue
+
         # 确认框可能覆盖在返回键或退出集结按钮上，必须优先处理。
         _confirm_score, confirm_rect = _match(frame, "confirm")
         if confirm_rect is not None:
+            unknown_since = None
             remaining = max(0.1, deadline - time.monotonic())
             if not _click_and_confirm(
                 "confirm",
@@ -1102,6 +1140,7 @@ def recover_after_completed_battles(
         # 庭院也可能仍显示同心队集结横幅，因此要先解除集结，再判定成功。
         _exit_score, exit_rect = _match(frame, "exit_team")
         if exit_rect is not None:
+            unknown_since = None
             if not _click_exit_team_until_confirm(
                 exit_rect=exit_rect,
                 label="战后恢复/退出组队",
@@ -1120,15 +1159,40 @@ def recover_after_completed_battles(
 
         _back_score, back_rect = _match(frame, "back")
         if back_rect is not None:
+            unknown_since = None
             _click_rect(back_rect, "战后恢复/左上角返回")
             action_count += 1
             time.sleep(1.0)
             continue
 
+        if fallback is not None:
+            if unknown_since is None:
+                unknown_since = time.monotonic()
+            elif time.monotonic() - unknown_since >= 3.0:
+                print(
+                    "同心队专属恢复连续 3 秒未识别到专属状态，"
+                    "转交通用返回恢复"
+                )
+                return fallback(stop_event)
+
         time.sleep(SCREENSHOT_INTERVAL)
 
     print(f"[ERROR] 同心队战后恢复超过 {timeout:.0f} 秒仍未回到无组队状态的庭院")
     return False
+
+
+def recover_to_courtyard(
+    stop_event=None,
+    *,
+    timeout: float = 90.0,
+    fallback: Optional[Callable[[Any], Any]] = None,
+) -> Any:
+    """同心队任意阶段出错时，统一执行专属退队并返回庭院。"""
+    return recover_after_completed_battles(
+        stop_event=stop_event,
+        timeout=timeout,
+        fallback=fallback,
+    )
 
 
 def _leave_team_to_courtyard() -> bool:
@@ -1152,7 +1216,11 @@ def _leave_team_to_courtyard() -> bool:
     return _exit_gathering_to_courtyard()
 
 
-def run(role: str = "leader") -> bool | str:
+def run(
+    role: str = "leader",
+    completed_battles: int = 0,
+    on_battle_completed: Optional[Callable[[int, int], None]] = None,
+) -> bool | str:
     """执行同心队队长战斗或成员预存流程。"""
     if role not in {"leader", "member"}:
         print("[ERROR] 未配置有效的同心队身份")
@@ -1183,7 +1251,10 @@ def run(role: str = "leader") -> bool | str:
         return False
     if not _configure_and_create_team():
         return False
-    battle_result = _run_battles()
+    battle_result = _run_battles(
+        completed_battles=completed_battles,
+        on_battle_completed=on_battle_completed,
+    )
     if battle_result == BATTLES_COMPLETED_CLEANUP_FAILED:
         return BATTLES_COMPLETED_CLEANUP_FAILED
     if not battle_result:

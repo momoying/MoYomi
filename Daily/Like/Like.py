@@ -63,8 +63,8 @@ Rect = Tuple[int, int, int, int]
 FRIEND_HEADER_CLICK_REGION: Rect = (320, 155, 490, 195)
 CROSS_REGION_HEADER_CLICK_REGION: Rect = (320, 575, 490, 615)
 CROSS_REGION_FRIEND_CLICK_REGIONS: Tuple[Rect, Rect] = (
-    (340, 260, 440, 315),
-    (340, 350, 440, 405),
+    (340, 260, 430, 315),
+    (340, 350, 430, 405),
 )
 
 

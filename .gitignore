@@ -32,3 +32,4 @@ task_timeout_recovery_screenshots/
 
 # Temporary files written by atomic JSON saves
 *.tmp
+/config/weekly_account_status.json

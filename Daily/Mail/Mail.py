@@ -6,7 +6,7 @@ import random
 import sys
 import time
 from pathlib import Path
-from typing import Iterable, Optional, Tuple
+from typing import Any, Callable, Iterable, Optional, Tuple
 
 
 SCRIPT_DIR = Path(__file__).resolve().parent
@@ -34,6 +34,7 @@ TEMPLATES = {
     "mark_all_read": str(SCRIPT_DIR / "mark_all_read.png"),
     "confirm": str(SCRIPT_DIR / "confirm.png"),
     "reward": str(SCRIPT_DIR / "reward.png"),
+    "illustration_cancel": str(SCRIPT_DIR / "cancel.png"),
     "close": str(SCRIPT_DIR / "close.png"),
 }
 
@@ -46,6 +47,7 @@ REGIONS = {
     "mark_all_read": ((140, 560), (340, 690)),
     "confirm": ((600, 480), (930, 670)),
     "reward": ((300, 30), (950, 280)),
+    "illustration_cancel": ((0, 0), (1280, 720)),
     "close": ((1080, 20), (1270, 210)),
 }
 
@@ -58,6 +60,7 @@ MATCH_THRESHOLDS = {
     "mark_all_read": 0.86,
     "confirm": 0.86,
     "reward": 0.86,
+    "illustration_cancel": 0.90,
     "close": 0.86,
 }
 
@@ -70,6 +73,7 @@ RETURN_WAIT_SECONDS = 10.0
 CONFIRM_RETRY_SECONDS = 2.0
 REWARD_READY_SECONDS = 2.0
 REWARD_RETRY_SECONDS = 3.0
+ILLUSTRATION_RECOVERY_SECONDS = 10.0
 
 # 奖励板位于屏幕中央；每次随机选择一侧，只点击一边。
 REWARD_BLANK_AREAS = {
@@ -288,6 +292,39 @@ def _close_mailbox() -> bool:
         return False
     _, name, _, _ = _wait_for_any(("main",), RETURN_WAIT_SECONDS)
     return name == "main"
+
+
+def recover_to_courtyard(
+    stop_event=None,
+    *,
+    fallback: Optional[Callable[[Any], Any]] = None,
+) -> Any:
+    """先取消邮件插画启用弹窗，再交给通用恢复逐层返回庭院。"""
+    deadline = time.monotonic() + ILLUSTRATION_RECOVERY_SECONDS
+    cancel_clicks = 0
+    while time.monotonic() < deadline:
+        if stop_event is not None and stop_event.is_set():
+            return False
+        frame = _take_frame()
+        if frame is None:
+            continue
+        score, cancel_rect = _match(frame, "illustration_cancel")
+        if cancel_rect is None:
+            break
+        LOGGER.info(
+            "专属恢复",
+            f"识别到邮件插画启用弹窗，取消按钮匹配分数 {score:.3f}",
+        )
+        _click_rect(cancel_rect, "邮件插画启用/取消")
+        cancel_clicks += 1
+        time.sleep(SCREENSHOT_INTERVAL)
+
+    if cancel_clicks:
+        LOGGER.info("专属恢复", f"邮件插画弹窗已处理，共点击取消 {cancel_clicks} 次")
+    if fallback is None:
+        frame = _take_frame()
+        return frame is not None and _match(frame, "main")[1] is not None
+    return fallback(stop_event)
 
 
 def run() -> bool:

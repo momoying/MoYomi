@@ -84,6 +84,16 @@ SPECS = {
         ((1050, 490), (1280, 690)),
     ),
     "ready_room": MatchSpec(ASSET_DIR / "ready_room.png", ((0, 0), (360, 100))),
+    "room_exit_confirm": MatchSpec(
+        DAILY_DIR / "Exp" / "exit_confirm.png",
+        ((600, 350), (920, 520)),
+        0.90,
+    ),
+    "heart_exit_confirm": MatchSpec(
+        DAILY_DIR / "HeartTeam" / "confirm.png",
+        ((600, 350), (900, 520)),
+        0.90,
+    ),
     "settlement": MatchSpec(
         DAILY_DIR / "Exp" / "win.png",
         ((250, 0), (950, 210)),
@@ -178,6 +188,11 @@ SPECS = {
 SAFE_ROOM_STATES = (
     ("prepare_button", "准备界面"),
     ("ready_room", "准备倒计时房间"),
+)
+
+ROOM_EXIT_CONFIRM_STATES = (
+    ("room_exit_confirm", "退出房间确认"),
+    ("heart_exit_confirm", "退出组队确认"),
 )
 
 CLICK_ACTIONS = (
@@ -383,6 +398,26 @@ def recover_to_login(
                 "blocked_battle",
             )
 
+        # 准备房左上角返回后，确认弹窗会覆盖在原页面上，背景里的返回
+        # 按钮仍能高分匹配。必须先处理确认，不能继续点击背景返回按钮。
+        exit_confirmation = None
+        for state_name, label in ROOM_EXIT_CONFIRM_STATES:
+            score, rect = _match(frame, state_name)
+            if rect is not None:
+                exit_confirmation = (state_name, label, score, rect)
+                break
+        if exit_confirmation is not None:
+            state_name, label, score, rect = exit_confirmation
+            print(f"检测到{label}，匹配分数 {score:.3f}，执行确认")
+            steps += 1
+            if not _click_and_confirm(state_name, label, rect):
+                return _blocked(
+                    f"未能完成{label}",
+                    frame,
+                    "room_exit_confirm_failed",
+                )
+            continue
+
         room_state = None
         for state_name, label in SAFE_ROOM_STATES:
             score, rect = _match(frame, state_name)
@@ -400,15 +435,11 @@ def recover_to_login(
                 )
             print(
                 f"检测到{label}，匹配分数 {score:.3f}，"
-                f"点击返回（返回按钮 {back_score:.3f}）"
+                f"点击一次返回并等待退出确认（返回按钮 {back_score:.3f}）"
             )
             steps += 1
-            if not _click_and_confirm("exp_back", f"{label}返回按钮", back_rect):
-                return _blocked(
-                    f"未能退出{label}",
-                    frame,
-                    "room_back_failed",
-                )
+            _click_rect(back_rect, f"{label}返回按钮")
+            time.sleep(SCREENSHOT_INTERVAL)
             continue
 
         score, rect = _match(frame, "login")

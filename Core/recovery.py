@@ -52,9 +52,18 @@ class RecoveryResult:
 
 
 COURTYARD_TEMPLATE = HELPER_DIR / "Daily" / "CoopReward" / "explore.png"
+COOP_REWARD_TEMPLATE = HELPER_DIR / "Daily" / "CoopReward" / "win.png"
+COOP_REWARD_SAFE_AREAS = {
+    "左侧": (15, 420, 70, 650),
+    "右侧": (1220, 300, 1270, 580),
+}
 
-# 用户指定的全屏识别优先级：2 > 4 > 1 > 3。
+# 奖励页必须先点安全区领取；其余按钮沿用用户指定优先级：2 > 4 > 1 > 3。
 ACTION_SPECS = (
+    (
+        "coop_reward",
+        MatchSpec(COOP_REWARD_TEMPLATE, "协战奖励界面", 0.90),
+    ),
     ("courtyard", MatchSpec(ASSET_DIR / "courtyard.png", "返回庭院按钮")),
     ("back", MatchSpec(ASSET_DIR / "back.png", "返回按钮")),
     ("close_pink", MatchSpec(ASSET_DIR / "close_pink.png", "粉色关闭按钮")),
@@ -101,7 +110,7 @@ def _is_courtyard(frame) -> bool:
 def find_highest_priority_action(
     frame,
 ) -> tuple[Optional[str], Optional[MatchSpec], Optional[float], Optional[Rect]]:
-    """在一张截图中按 2、4、1、3 的顺序返回首个命中的按钮。"""
+    """先识别协战奖励，再按 2、4、1、3 返回首个命中的按钮。"""
     for name, spec in ACTION_SPECS:
         score, rect = _match(frame, name, spec)
         if rect is not None:
@@ -117,6 +126,15 @@ def _click_rect(rect: Rect, label: str) -> None:
     y = random.randint(top + margin_y, bottom - margin_y)
     LOGGER.click(label, label, rect, (x, y))
     utils.adb_click(x, y)
+
+
+def _click_coop_reward_safe_area(score: float) -> None:
+    side, rect = random.choice(tuple(COOP_REWARD_SAFE_AREAS.items()))
+    LOGGER.info(
+        "协战奖励",
+        f"全屏识别到协战奖励袋，匹配分数 {score:.3f}，点击{side}安全区领取",
+    )
+    _click_rect(rect, f"协战奖励/{side}安全区")
 
 
 def prune_failure_screenshots(keep_count: int = SCREENSHOT_KEEP_COUNT) -> int:
@@ -176,7 +194,8 @@ def recover_to_courtyard(
     click_count = 0
     LOGGER.info(
         "运行",
-        "开始任务超时恢复，按钮优先级：返回庭院 > 返回 > 粉色关闭 > 红色关闭"
+        "开始任务超时恢复，优先处理协战奖励，按钮优先级："
+        "返回庭院 > 返回 > 粉色关闭 > 红色关闭"
     )
 
     while time.monotonic() - started_at < timeout:
@@ -193,10 +212,13 @@ def recover_to_courtyard(
             continue
 
         last_frame = frame
-        _, spec, score, rect = find_highest_priority_action(frame)
+        action_name, spec, score, rect = find_highest_priority_action(frame)
         if spec is not None and score is not None and rect is not None:
             unknown_since = None
-            _click_rect(rect, f"{spec.label}（匹配分数 {score:.3f}）")
+            if action_name == "coop_reward":
+                _click_coop_reward_safe_area(score)
+            else:
+                _click_rect(rect, f"{spec.label}（匹配分数 {score:.3f}）")
             click_count += 1
             time.sleep(POST_CLICK_DELAY_SECONDS)
             continue
