@@ -8,9 +8,9 @@ from pathlib import Path
 from unittest.mock import patch
 
 import main as controller
-from Core import notifications
-from Daily.Like import Like
-from Sign_A_Switch import Sign
+from module import notifications
+from tasks.Like import like as Like
+from tasks.Account import sign as Sign
 
 
 NOW = datetime.fromisoformat("2026-08-07T20:00:00+08:00")

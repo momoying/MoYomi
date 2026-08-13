@@ -17,18 +17,15 @@ DEVELOPMENT_GUIDE.md
 config/account_status.json
 config/ui_settings.json
 cfg.txt
-serverchan_notification_state.json
+/config/serverchan_notification_state.json
 .env
 
 # Local OCR models
-modle/
+models/
 
 # Runtime logs and diagnostic screenshots
 *.log
-screenshot.png
-startup_recovery_screenshots/
-task_timeout_recovery_screenshots/
-**/error_screenshots/
+/error_screenshots/
 
 # Temporary files written by atomic JSON saves
 *.tmp
