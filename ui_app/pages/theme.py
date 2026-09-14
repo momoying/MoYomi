@@ -2,26 +2,15 @@
 
 from __future__ import annotations
 
-import asyncio
-import importlib.util
-import queue
-import re
-import sys
-import threading
-import traceback
-from contextlib import redirect_stderr, redirect_stdout
-from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Any, Callable, Optional
+from typing import Any
 
 import flet as ft
 
-import main as controller
 from module.appearance import DEFAULT_ACCENT, extract_monet_palette
-from module.notifications import clear_project_sendkey, get_serverchan_sendkey, set_project_sendkey
+from ui_app.components import *
 from ui_app.constants import *
 from ui_app.settings_store import *
-from ui_app.components import *
 
 
 class ThemePageMixin:

@@ -646,10 +646,12 @@ def select_account(target_account: str, exit_current: bool = False) -> Optional[
 
     exit_current=False 用于中控首次启动（调用方保证当前已在登录页）；后续切换账号时传 True。
     """
+    # 1. 规范化目标账号；需要切换时先退出当前登录。
     target = _normalize_account(target_account)
     if exit_current and not exit_to_login():
         return None
 
+    # 2. 登录页已选中目标时直接返回，避免重复展开列表。
     frame = _take_frame()
     if frame is None:
         return None
@@ -660,6 +662,7 @@ def select_account(target_account: str, exit_current: bool = False) -> Optional[
             print(f"登录页已选中目标账号 {target_account}，无需打开账号列表")
             return target_account
 
+    # 3. 打开列表并按白名单定向查找；识别不完整时停止选择。
     opened, _, list_frame = open_account_list()
     if not opened:
         return None
@@ -668,6 +671,7 @@ def select_account(target_account: str, exit_current: bool = False) -> Optional[
         print(f"定向账号选择失败: {target_account}，原因 {result.reason}")
         return None
 
+    # 4. 点击目标行并确认回到登录页，此处不执行登录。
     if not _select_account_row_and_confirm(
         result.entry.click_rect,
         f"账号 {result.entry.name}",
@@ -679,6 +683,7 @@ def select_account(target_account: str, exit_current: bool = False) -> Optional[
 
 def select_next_account() -> Optional[str]:
     """退出当前账号并选中下一个账号；不执行登录或系统选择。"""
+    # 1. 退出当前账号并打开账号列表，保留当前账号用于排除。
     if not exit_to_login():
         return None
 
@@ -686,6 +691,7 @@ def select_next_account() -> Optional[str]:
     if not opened:
         return None
 
+    # 2. 按白名单扫描首个未见账号；扫描停止原因不能当成成功。
     known_accounts = [current_account.name] if current_account is not None else []
     result = scan_account_list(known_accounts=known_accounts, initial_frame=list_frame)
     if result.reason != "new_account" or result.entry is None:
@@ -703,6 +709,7 @@ def select_next_account() -> Optional[str]:
 
 
 def run() -> bool:
+    """退出当前账号 → 扫描下一个账号 → 选中并返回登录页；登录由 sign.run 负责。"""
     return select_next_account() is not None
 
 

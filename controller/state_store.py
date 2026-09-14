@@ -578,38 +578,3 @@ def record_task_completion(
         system_state[task_name] = record
     system_state["latest_task_completed_at"] = timestamp
     return timestamp
-
-
-def mark_remaining_merchant_tasks_skipped(
-    state: dict[str, Any],
-    completed_at: datetime,
-) -> int:
-    """发现 50 蓝票后，将本周期仍到期的奸商任务统一标记为跳过。"""
-    skipped_count = 0
-    for account_state in state["accounts"].values():
-        for system_state in account_state["systems"].values():
-            if not task_is_enabled(system_state, MERCHANT_TASK):
-                continue
-            if not task_is_due(MERCHANT_TASK, system_state, completed_at):
-                # 已检测过的 50/70/80/90 结果保持不变。
-                continue
-            record_task_completion(MERCHANT_TASK, system_state, completed_at)
-            set_task_record_result(
-                system_state,
-                MERCHANT_TASK,
-                MERCHANT_SKIPPED_RESULT,
-            )
-            skipped_count += 1
-    return skipped_count
-
-
-def merchant_task_was_globally_skipped(
-    system_state: dict[str, Any],
-    now: datetime,
-) -> bool:
-    """只在写入跳过标记的同一刷新周期跳过；下个周三/周六会重新到期。"""
-    return (
-        task_record_result(system_state, MERCHANT_TASK)
-        == MERCHANT_SKIPPED_RESULT
-        and not task_is_due(MERCHANT_TASK, system_state, now)
-    )

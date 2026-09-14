@@ -218,6 +218,7 @@ def _close_reward_success(rect: Rect, timeout: float) -> bool:
 
 def _complete_one_tap_and_exit() -> bool:
     """按领取判断、领奖处理、安全退出三个阶段完成一键日常。"""
+    # 1. 定位一键完成；必要时切换日常标签，重试仍消耗同一个总超时。
     deadline = time.monotonic() + POST_ONE_TAP_TIMEOUT_SECONDS
     initial_wait = min(ONE_TAP_WAIT_SECONDS, max(0.1, deadline - time.monotonic()))
     one_tap_rect, best_one_tap_score = _wait_for_one_tap(initial_wait)
@@ -253,6 +254,7 @@ def _complete_one_tap_and_exit() -> bool:
             )
             return False
 
+    # 2. 首次点击后按 claim → loading → verify_completion/exit 推进。
     phase = "claim"
     claim_round = 1
     one_tap_clicks = 1
@@ -318,6 +320,7 @@ def _complete_one_tap_and_exit() -> bool:
             back_exhausted_logged = False
             continue
 
+        # 3. 首轮奖励后复核顶部完成标志，未完成才允许第二轮领取。
         if phase == "verify_completion":
             completed_score, completed_rect = _match(frame, "completed")
             if completed_rect is not None:
@@ -390,6 +393,7 @@ def _complete_one_tap_and_exit() -> bool:
                 time.sleep(SCREENSHOT_INTERVAL)
                 continue
 
+        # 4. 页面变灰表示请求已受理，仅等待弹窗，避免重复领取或误点返回。
         if phase == "loading":
             if not loading_logged:
                 print("奖励发放处理中，暂停点击并持续等待弹窗")
@@ -397,6 +401,7 @@ def _complete_one_tap_and_exit() -> bool:
             time.sleep(SCREENSHOT_INTERVAL)
             continue
 
+        # 5. 返回按钮恢复正常颜色后有限补点，下一帧确认主界面才算成功。
         if phase == "exit" and back_rect is not None:
             if not _back_is_active(frame, back_rect):
                 time.sleep(SCREENSHOT_INTERVAL)
@@ -421,10 +426,13 @@ def _complete_one_tap_and_exit() -> bool:
 
 
 def run() -> bool:
+    """打开任务列表 → 一键领取并处理弹窗 → 确认退出。"""
     utils.connect_to_mumu()
     print("开始一键日常任务")
+    # 1. 确认任务列表入口点击生效后，才开始领取。
     if not _wait_and_click("task_list", "任务列表", MAIN_WAIT_SECONDS):
         return False
+    # 2. 领取、补领和退出共用总超时；成功以重新出现主界面为准。
     if not _complete_one_tap_and_exit():
         return False
     print("一键日常任务完成，已确认返回主界面")

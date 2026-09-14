@@ -629,9 +629,11 @@ def _return_to_courtyard() -> bool:
 
 
 def check_merchant() -> MerchantResult:
+    """进入神秘商店 → 检测蓝票价格 → 无蓝票时尝试刷新 → 退出并返回结果。"""
     utils.connect_to_mumu()
     print("开始奸商检测")
 
+    # 1. 展开商店入口并确认进入神秘商店页。
     if not _ensure_store_menu_expanded():
         return MerchantResult.ERROR
     if not _wait_and_click("store_entry", "商店入口", ENTRY_WAIT_SECONDS):
@@ -641,21 +643,24 @@ def check_merchant() -> MerchantResult:
     if page_result is MerchantResult.ERROR:
         return page_result
 
+    # 2. 先检测现有商品；有蓝票但价格不明属于识别失败。
     saw_blue_ticket, blue_ticket_price = _detect_blue_ticket_price()
     if saw_blue_ticket and blue_ticket_price is None:  # 有蓝票，但价格分类失败
         return MerchantResult.ERROR
+    # 3. 仅没有蓝票时尝试刷新；真正刷新成功后才重新识别。
     if not saw_blue_ticket:
-        refresh_state = _refresh_merchant_shop() # 神秘商店刷新状态出错
+        refresh_state = _refresh_merchant_shop()
         if refresh_state is RefreshState.ERROR:
             return MerchantResult.ERROR
-        if refresh_state is RefreshState.REFRESHED: # 重新刷新
+        if refresh_state is RefreshState.REFRESHED:
             saw_blue_ticket, blue_ticket_price = _detect_blue_ticket_price()
             if saw_blue_ticket and blue_ticket_price is None:
                 return MerchantResult.ERROR
 
+    # 4. 返回庭院后输出价格结果，避免页面残留影响下一任务。
     if not _return_to_courtyard():
         return MerchantResult.ERROR
-    if blue_ticket_price == "50": #给我多来点吧
+    if blue_ticket_price == "50":
         return MerchantResult.BLUE_TICKET_50
     if blue_ticket_price == "70":
         return MerchantResult.BLUE_TICKET_70

@@ -984,34 +984,46 @@ def _return_to_courtyard() -> bool:
     return False
 
 
+def _prepare_soul_dungeon() -> bool:
+    """从庭院进入御魂十层 → 确认层数和锁阵 → 开启御魂加成。"""
+    # 1. 逐页确认进入副本；恢复回庭院后也必须从探索入口重走。
+    if not _wait_and_click(
+        "main",
+        "探索",
+        ENTRY_WAIT_SECONDS,
+        max_attempts=EXPLORE_MAX_ATTEMPTS,
+    ):
+        return False
+    if not _wait_and_click("soul_entry", "御魂入口", ENTRY_WAIT_SECONDS):
+        return False
+    if not _wait_and_click("dungeon_card", "八岐大蛇副本", ENTRY_WAIT_SECONDS):
+        return False
+    # 2. 确认层数和锁阵后才开启加成，连续场次复用这组配置。
+    if not _ensure_floor10_active():
+        return False
+    if not _ensure_formation_locked():
+        return False
+    if not _enable_soul_bonus():
+        return False
+    return True
+
+
 def run(
     enable_bonus: bool = True,
     disable_bonus_after: bool = False,
 ) -> bool | str:
+    """准备御魂十层 → 挑战并结算 → 最后一场关闭加成并退出。"""
     utils.connect_to_mumu()
     print("开始协战奖励任务")
 
+    # 1. 首场或恢复后走完整准备；连续场次复用当前挑战页。
     if enable_bonus:
-        if not _wait_and_click(
-            "main",
-            "探索",
-            ENTRY_WAIT_SECONDS,
-            max_attempts=EXPLORE_MAX_ATTEMPTS,
-        ):
-            return False
-        if not _wait_and_click("soul_entry", "御魂入口", ENTRY_WAIT_SECONDS):
-            return False
-        if not _wait_and_click("dungeon_card", "八岐大蛇副本", ENTRY_WAIT_SECONDS):
-            return False
-        if not _ensure_floor10_active():
-            return False
-        if not _ensure_formation_locked():
-            return False
-        if not _enable_soul_bonus():
+        if not _prepare_soul_dungeon():
             return False
     else:
         print("继续下一场挑战")
 
+    # 2. 发起挑战并结算；已结算但退出失败必须保留专用状态，避免重打。
     if not _wait_and_click("challenge", "挑战", CHALLENGE_WAIT_SECONDS):
         return False
     battle_result = collect_battle_rewards()
@@ -1024,6 +1036,7 @@ def run(
     if not battle_result:
         return False
 
+    # 3. 仅最后一场关闭加成并返回庭院；收尾失败交给中控恢复。
     if disable_bonus_after:
         if not _disable_soul_bonus():
             print(

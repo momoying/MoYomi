@@ -289,6 +289,22 @@ class RecoveryAssets(TaskAssets):
         name="coop_reward",
     )
 
+    # 手机绑定引导的取消按钮
+    I_PHONE_BIND_CANCEL = ImageAsset(
+        file=TASKS_DIR / "Exp" / "res" / "phone_bind_cancel.png",
+        region=((380, 400), (680, 610)),
+        threshold=0.90,
+        name="phone_bind_cancel",
+    )
+
+    # 关联手机奖励页的前往绑定按钮
+    I_PHONE_BIND = ImageAsset(
+        file=TASKS_DIR / "Exp" / "res" / "phone_bind.png",
+        region=((880, 390), (1160, 640)),
+        threshold=0.90,
+        name="phone_bind",
+    )
+
     # 返回庭院按钮
     I_COURTYARD = ImageAsset(
         file=RECOVERY_RES_DIR / "courtyard.png",
@@ -339,11 +355,15 @@ class RecoveryAssets(TaskAssets):
         "右侧": C_COOP_REWARD_RIGHT.area,
     }
     ACTION_SPECS = (
-        ("coop_reward", RecoveryMatchSpec(I_COOP_REWARD.file, "协战奖励界面", 0.90)),
         ("courtyard", RecoveryMatchSpec(I_COURTYARD.file, "返回庭院按钮")),
         ("back", RecoveryMatchSpec(I_BACK.file, "返回按钮")),
         ("close_pink", RecoveryMatchSpec(I_CLOSE_PINK.file, "粉色关闭按钮")),
         ("close_red", RecoveryMatchSpec(I_CLOSE_RED.file, "红色关闭按钮")),
+        # 通用退出按钮均未命中时，再处理偶发的手机绑定两级引导。
+        ("phone_bind_cancel", RecoveryMatchSpec(I_PHONE_BIND_CANCEL.file, "手机绑定取消按钮", 0.90)),
+        ("phone_bind", RecoveryMatchSpec(I_PHONE_BIND.file, "前往绑定按钮", 0.90)),
+        # 协战奖励最少见，放在最后作为专用兜底。
+        ("coop_reward", RecoveryMatchSpec(I_COOP_REWARD.file, "协战奖励界面", 0.90)),
     )
 
 

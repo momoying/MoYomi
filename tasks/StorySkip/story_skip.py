@@ -145,7 +145,7 @@ def process_battle_prepare_frame(frame, *, perform_click: bool = True) -> bool:
 
 
 def run(stop_event=None) -> bool:
-    """持续处理剧情；设置 stop_event 后在下一轮截图前安全退出。"""
+    """按优先级跳过剧情 → 确认挑战 → 准备和领奖 → 恢复剧情检测；支持安全停止。"""
     if not utils.connect_to_mumu():
         raise RuntimeError(
             "无法连接 MuMu ADB，无法执行点击；请检查 cfg.txt 中的 adb_path 和 adb_port"
@@ -160,6 +160,7 @@ def run(stop_event=None) -> bool:
         "右上剧情跳过 > 挑战 > 天眼 > 未知问号标志"
     )
 
+    # 1. 挑战确认、战斗和领奖各自保留状态，避免在战斗中误点剧情控件。
     challenge_pending = False
     in_battle = False
     battle_phase = "prepare"
@@ -174,6 +175,7 @@ def run(stop_event=None) -> bool:
             time.sleep(interval)
             continue
 
+        # 2. 挑战按钮消失后才进入战斗模式，并降低截图频率。
         if challenge_pending:
             challenge_visible = process_challenge_confirmation_frame(frame)
             if not challenge_visible:
@@ -186,6 +188,7 @@ def run(stop_event=None) -> bool:
                 print("挑战标志已消失，确认进入战斗；截屏间隔调整为 3 秒")
             continue
 
+        # 3. 准备按钮和奖励界面均需先看到、再确认消失，才能进入下一阶段。
         if in_battle:
             if battle_phase == "prepare":
                 prepare_visible = process_battle_prepare_frame(frame)
@@ -206,6 +209,7 @@ def run(stop_event=None) -> bool:
                 utils.config["screenshot_speed"] = SCREENSHOT_INTERVAL
             continue
 
+        # 4. 普通剧情每帧只执行最高优先级动作；挑战点击后下一帧确认。
         action = process_frame(frame)
         if action == "challenge":
             challenge_pending = True

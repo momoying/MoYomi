@@ -58,7 +58,7 @@ class CoopRewardAssets(TaskAssets):
     # 已锁定阵容标记
     I_FORMATION_LOCKED = ImageAsset(
         file=RES_DIR / "formation_locked.png",
-        region=((600, 560), (820, 720)),
+        region=((690, 650), (735, 695)),
         threshold=0.88,
         name='formation_locked',
     )
@@ -66,7 +66,7 @@ class CoopRewardAssets(TaskAssets):
     # 未锁定阵容标记
     I_FORMATION_UNLOCKED = ImageAsset(
         file=RES_DIR / "formation_unlocked.png",
-        region=((600, 560), (820, 720)),
+        region=((690, 650), (735, 695)),
         threshold=0.85,
         name='formation_unlocked',
     )

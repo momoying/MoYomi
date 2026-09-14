@@ -470,9 +470,11 @@ def _purchase_ticket() -> bool:
 
 
 def check_consignment_house() -> ConsignmentHouseResult:
+    """进入商店和兑换页 → 检查寄售券 → 按需购买 → 确认退出。"""
     utils.connect_to_mumu()
     print("开始寄售屋周常检测")
 
+    # 1. 展开商店入口并进入寄售屋。
     if not _ensure_store_menu_expanded():
         return ConsignmentHouseResult.ERROR
     _, store_rect, _ = _wait_for_template(
@@ -491,6 +493,7 @@ def check_consignment_house() -> ConsignmentHouseResult:
     # 寄售屋图标进入后仍保留在底栏，不能等待模板消失。
     _click_rect(consignment_rect, "寄售屋入口")
 
+    # 2. 确认兑换灯笼激活后才检查商品，避免把页面未加载当成已购买。
     _, exchange_rect, _ = _wait_for_template(
         "exchange_inactive", "未选中的兑换灯笼", PAGE_WAIT_SECONDS
     )
@@ -502,6 +505,7 @@ def check_consignment_house() -> ConsignmentHouseResult:
     ):
         return ConsignmentHouseResult.ERROR
 
+    # 3. 区分检测失败和商品已售罄；已购买也必须返回庭院。
     detection_ok, ticket_rect = _find_ticket(TICKET_DETECTION_SECONDS)
     if not detection_ok:
         return ConsignmentHouseResult.ERROR
@@ -511,10 +515,12 @@ def check_consignment_house() -> ConsignmentHouseResult:
         print("本周寄售券已经购买，已返回庭院")
         return ConsignmentHouseResult.ALREADY_PURCHASED
 
+    # 4. 打开购买弹窗，选择最大数量并领取奖励。
     if not _open_purchase_dialog(ticket_rect):
         return ConsignmentHouseResult.ERROR
     if not _purchase_ticket():
         return ConsignmentHouseResult.ERROR
+    # 5. 复核兑换页，再返回庭院后报告购买成功。
     # 奖励消失后回到兑换页，此时商品位置会变化；无需再次定位寄售券。
     if not _wait_for_exchange_active(PAGE_WAIT_SECONDS):
         return ConsignmentHouseResult.ERROR

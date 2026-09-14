@@ -144,9 +144,9 @@ MAIL_TASK = "mail_collected"
 
 COOP_REWARD_TASK = "coop_reward_completed"
 
-COOP_REWARD_BASE_RUNS = 5
+COOP_REWARD_BASE_RUNS = 12
 
-COOP_REWARD_EXTRA_RUNS = 5
+COOP_REWARD_EXTRA_RUNS = 2
 
 BOUNTY_RESULT_DETAILS = {
     "normal_magatama_collaboration": "普通勾协",

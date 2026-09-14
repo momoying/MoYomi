@@ -514,22 +514,17 @@ def _wait_and_enter_game(
             continue
 
         recognized = _ocr_texts_in_region(frame, ENTER_GAME_TEXT_REGION)
-        last_texts = [text for text, _ in recognized]
-        enter_game_visible = any(
-            "进入游戏" in text.replace(" ", "")
-            for text, confidence in recognized
-            if confidence >= OCR_MIN_CONFIDENCE
-        )
+        valid_texts = [text for text, conf in recognized if conf >= OCR_MIN_CONFIDENCE]
+        # 将所有文本块直接拼接
+        combined_text = "".join(valid_texts)
+        # 去掉可能存在的空格，判断是否包含目标文字
+        enter_game_visible = "进入游戏" in combined_text.replace(" ", "")
+
         if enter_game_visible:
-            best_confidence = max(
-                confidence
-                for text, confidence in recognized
-                if "进入游戏" in text.replace(" ", "")
-                and confidence >= OCR_MIN_CONFIDENCE
-            )
+            best_confidence = max(conf for _, conf in recognized if conf >= OCR_MIN_CONFIDENCE)
             LOGGER.match(
                 "进入游戏",
-                "OCR:进入游戏",
+                f"OCR拼接结果:{combined_text}",
                 best_confidence,
                 OCR_MIN_CONFIDENCE,
                 ENTER_GAME_CLICK_REGION,
@@ -556,7 +551,8 @@ def _wait_and_enter_game(
 
 
 def run(system: str = "IOS", region: str = "same") -> bool:
-    """登录当前界面已选中的账号，仅负责指定的一个系统。"""
+    """校验系统和区服 → 登录并选择系统 → 确认目标区服 → 进入游戏。"""
+    # 1. 校验参数后才操作模拟器，避免在错误系统或区服执行后续任务。
     normalized_system = normalize_system(system)
     if normalized_system is None:
         print(f"[ERROR] 不支持的系统 {system!r}，仅支持 {VALID_SYSTEMS}")
@@ -572,14 +568,17 @@ def run(system: str = "IOS", region: str = "same") -> bool:
         f"{REGION_NAMES[normalized_region]}"
     )
     template_name = normalized_system.lower()
+    # 2. 处理登录弹窗并选择系统；每一步失败立即停止后续点击。
     if not _wait_and_select_system(template_name, LOGIN_STEP_WAIT_SECONDS):
         return False
+    # 3. OCR 确认区服，必要时切换角色卡；不能仅凭卡片位置判断。
     if not _ensure_region(
         template_name,
         normalized_region,
         LOGIN_STEP_WAIT_SECONDS,
     ):
         return False
+    # 4. 点击进入游戏并确认按钮消失；庭院就绪由后续流程确认。
     if not _wait_and_enter_game(template_name, LOGIN_STEP_WAIT_SECONDS):
         return False
 

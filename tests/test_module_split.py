@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib
 import tempfile
 import unittest
+from datetime import datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -54,6 +55,49 @@ class ControllerCompatibilityTests(unittest.TestCase):
 
     def test_root_main_is_only_a_compatibility_entrypoint(self):
         self.assertLessEqual(len((PROJECT_ROOT / "main.py").read_text(encoding="utf-8").splitlines()), 30)
+
+    def test_heart_team_runner_receives_role_from_state_store(self):
+        system_state = state_store._empty_system_state()
+        state_store.set_heart_team_role(system_state, "leader")
+        received = {}
+
+        def runner(**kwargs):
+            received.update(kwargs)
+            return True
+
+        success, result = task_services._invoke_task_runner(
+            main.HEART_TEAM_TASK,
+            runner,
+            1,
+            1,
+            system_state,
+        )
+
+        self.assertTrue(success)
+        self.assertIsNone(result)
+        self.assertEqual(received["role"], "leader")
+
+    def test_merchant_skip_helpers_live_in_scheduler(self):
+        system_state = state_store._empty_system_state()
+        state = {
+            "accounts": {
+                "account": {
+                    "systems": {"IOS": system_state},
+                }
+            }
+        }
+        now = datetime.now().astimezone()
+        now -= timedelta(days=(now.weekday() - 2) % 7)
+
+        self.assertEqual(
+            scheduler.mark_remaining_merchant_tasks_skipped(state, now),
+            1,
+        )
+        self.assertTrue(
+            scheduler.merchant_task_was_globally_skipped(system_state, now)
+        )
+        self.assertNotIn("task_is_enabled", vars(state_store))
+        self.assertNotIn("task_is_due", vars(state_store))
 
 
 class UiCompatibilityTests(unittest.TestCase):

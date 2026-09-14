@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any, Callable, Optional
 
 from controller.constants import *
+from controller.state_store import heart_team_role
 from controller.types import ControllerServices
 from module.diagnostics import capture_error_screenshot, configure_error_screenshots
 

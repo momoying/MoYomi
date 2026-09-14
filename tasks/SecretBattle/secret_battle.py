@@ -99,7 +99,8 @@ def run(
     attempts: int = 0,
     attempts_callback: Optional[AttemptsCallback] = None,
 ) -> bool:
-    """执行当前秘闻层；每次实际点击挑战后消耗一次协战次数。"""
+    """校验协战次数 → 挑战扣次 → 准备与战斗 → 领奖后继续；失败或耗尽时停止。"""
+    # 1. 先校验次数并连接模拟器，避免无额度时发起挑战。
     remaining = int(attempts)
     if remaining <= 0:
         print("[ERROR] 协战次数为 0，请先在工具控制中填写可用次数")
@@ -120,6 +121,7 @@ def run(
             print("[WARN] 截图失败，等待下一次检测")
             continue
 
+        # 2. 挑战阶段先检查已获得奖励标志，再判断额度和挑战按钮。
         if state == "challenge":
             obtained_score, obtained_rect = _match(
                 frame,
@@ -154,6 +156,7 @@ def run(
             unknown_frames = 0
             x, y = _random_inner_point(challenge_rect)
             DEVICE.click(x, y)
+            # 实际点击挑战后立即扣次并回调，不能等结算后再扣。
             remaining -= 1
             if attempts_callback is not None:
                 attempts_callback(remaining)
@@ -165,6 +168,7 @@ def run(
             battle_started_at = time.monotonic()
             continue
 
+        # 3. 战斗阶段优先检查失败，再处理准备和奖励，未知画面受总战斗超时约束。
         failed_score, failed_rect = _match(
             frame,
             FAILED_TEMPLATE,
@@ -199,6 +203,7 @@ def run(
             REWARD_REGION,
             REWARD_THRESHOLD,
         )
+        # 4. 关闭奖励后切回挑战阶段，下一帧重新判断是否继续。
         if reward_rect is not None:
             print(f"[SUCCESS] 检测到战斗奖励，匹配分数 {reward_score:.3f}")
             _click_blank()

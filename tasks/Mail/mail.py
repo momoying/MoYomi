@@ -299,9 +299,11 @@ def recover_to_courtyard(
 
 
 def run() -> bool:
+    """检查邮箱红点 → 按需进入并领取 → 关闭邮箱返回庭院。"""
     utils.connect_to_mumu()
     LOGGER.info("启动", "开始领取邮件任务")
 
+    # 1. 无红点属于正常完成；识别不到邮箱不能当成无邮件。
     mail_state, mail_rect = _wait_for_mail_state()
     if mail_state is None or mail_rect is None:
         return False
@@ -310,10 +312,12 @@ def run() -> bool:
         return True
 
     LOGGER.info("邮件检查", "检测到邮箱红点，进入邮箱领取附件")
+    # 2. 打开未读邮箱并处理领取弹窗。
     if not _click_until_disappears("mail_unread", "进入邮箱", mail_rect):
         return False
     if not _claim_mail():
         return False
+    # 3. 关闭邮箱并确认庭院，避免下一任务从邮件页开始。
     if not _close_mailbox():
         return False
 

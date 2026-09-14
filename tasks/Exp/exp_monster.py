@@ -876,16 +876,18 @@ def _return_to_main(timeout: float = MAIN_WAIT_SECONDS) -> bool:
 
 
 def run() -> bool:
-    """执行一次经验妖怪任务，完成战斗结算时返回 True。"""
+    """进入经验妖怪组队页 → 寻队并战斗（失败重试）→ 返回庭院。"""
     utils.connect_to_mumu()
 
     print("开始经验妖怪任务，截图间隔 0.5 秒")
+    # 1. 展开组队入口并确认选中经验妖怪。
     if not _ensure_team_menu_expanded():
         return False
     if not _wait_and_click("team", "组队", MAIN_WAIT_SECONDS):
         return False
     if not _select_exp_monster_if_needed():
         return False
+    # 2. 持续寻队；战败后的无队可入不能按今日已完成处理。
     failed_battles = 0
     while True:
         join_result = _join_team()
@@ -898,6 +900,7 @@ def run() -> bool:
         if not join_result:
             return False
 
+        # 3. 等待战斗结果；战败刷新后重新寻队，识别错误立即交给中控。
         battle_result = _wait_for_battle_finish()
         if battle_result == "error":
             return False
@@ -905,6 +908,7 @@ def run() -> bool:
             failed_battles += 1
             print(f"经验妖怪第 {failed_battles} 场战斗失败，已刷新并重新寻找队伍")
             continue
+        # 4. 战斗成功后确认返回主界面，才报告任务完成。
         return _return_to_main()
 
 

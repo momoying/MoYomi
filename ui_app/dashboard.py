@@ -2,33 +2,26 @@
 
 from __future__ import annotations
 
-import asyncio
-import importlib.util
 import queue
-import re
-import sys
 import threading
-import traceback
-from contextlib import redirect_stderr, redirect_stdout
 from datetime import datetime, timedelta
-from pathlib import Path
-from typing import Any, Callable, Optional
+from typing import Any, Optional
 
 import flet as ft
 
 import main as controller
-from module.appearance import DEFAULT_ACCENT, extract_monet_palette
-from module.notifications import clear_project_sendkey, get_serverchan_sendkey, set_project_sendkey
-from ui_app.constants import *
-from ui_app.settings_store import *
-from ui_app.components import *
 
-from ui_app.pages.layout import LayoutMixin
+from module.appearance import DEFAULT_ACCENT
+from module.notifications import get_serverchan_sendkey
+from ui_app.components import *
+from ui_app.constants import *
 from ui_app.pages.daily import DailyPageMixin
-from ui_app.pages.tools import ToolsPageMixin
+from ui_app.pages.layout import LayoutMixin
 from ui_app.pages.settings import SettingsPageMixin
 from ui_app.pages.theme import ThemePageMixin
+from ui_app.pages.tools import ToolsPageMixin
 from ui_app.runtime import UiRuntimeMixin
+from ui_app.settings_store import *
 
 
 class AssistantDashboard(
@@ -59,6 +52,9 @@ class AssistantDashboard(
         self.tool_running = False
         self.active_section = "daily"
         self.task_mode = controller.DAILY_MODE
+        self.show_important_only = False
+        self._scheduled_run_at: Optional[datetime] = None
+        self._scheduled_run_mode = controller.DAILY_MODE
         self.active_settings_section = "global"
         self.active_tool = "story_skip"
         self.current_key: Optional[tuple[str, str]] = None
@@ -78,8 +74,8 @@ class AssistantDashboard(
             font_family="Microsoft YaHei UI",
             color_scheme_seed=COLORS["active"],
         )
-        self.page.window.width = 1420
-        self.page.window.height = 880
+        self.page.window.width = 1350
+        self.page.window.height = 860
         self.page.window.min_width = 1350
         self.page.window.min_height = 860
 
@@ -116,6 +112,23 @@ class AssistantDashboard(
             tooltip="重新读取账号状态",
             on_click=self.refresh_status,
         )
+        self.schedule_button = ft.Button(
+            content="设置定时",
+            icon=ft.Icons.SCHEDULE_ROUNDED,
+            tooltip="设置仅在本次应用运行期间有效的单次定时",
+            on_click=self.open_schedule_dialog,
+        )
+        self.important_summary_text = ft.Text(
+            size=11,
+            color=COLORS["muted"],
+            overflow=ft.TextOverflow.ELLIPSIS,
+        )
+        self.important_filter_button = ft.Button(
+            content="只看有结果",
+            icon=ft.Icons.FILTER_ALT_ROUNDED,
+            tooltip="只显示发现勾协或蓝票的角色",
+            on_click=self.toggle_important_filter,
+        )
         self.hide_unavailable_tasks = ft.Switch(
             value=bool(self.settings.get("hide_unavailable_tasks", False)),
             active_color=COLORS["active"],
@@ -123,12 +136,73 @@ class AssistantDashboard(
             height=32,
             on_change=self._on_hide_unavailable_changed,
         )
-        self.weekly_mode_switch = ft.Switch(
-            value=False,
-            active_color=COLORS["active"],
-            width=58,
-            height=32,
+        self.task_mode_selector = ft.SegmentedButton(
+            segments=[
+                ft.Segment(value=controller.DAILY_MODE, label="日常"),
+                ft.Segment(value=controller.WEEKLY_MODE, label="周常"),
+            ],
+            selected=[controller.DAILY_MODE],
+            show_selected_icon=False,
             on_change=self._on_task_mode_changed,
+        )
+
+        default_alarm = datetime.now().astimezone() + timedelta(minutes=1)
+        self.schedule_date_field = ft.TextField(
+            label="执行日期",
+            value=default_alarm.strftime("%Y-%m-%d"),
+            hint_text="2026-08-15",
+            dense=True,
+            width=190,
+            on_change=self._on_schedule_draft_changed,
+        )
+        self.schedule_time_field = ft.TextField(
+            label="执行时间（24 小时制）",
+            value=default_alarm.strftime("%H:%M"),
+            hint_text="05:30",
+            dense=True,
+            width=190,
+            on_change=self._on_schedule_draft_changed,
+        )
+        self.schedule_mode_selector = ft.SegmentedButton(
+            segments=[
+                ft.Segment(value=controller.DAILY_MODE, label="日常"),
+                ft.Segment(value=controller.WEEKLY_MODE, label="周常"),
+            ],
+            selected=[controller.DAILY_MODE],
+            show_selected_icon=False,
+            on_change=self._on_schedule_draft_changed,
+        )
+        self.schedule_message = ft.Text(size=11, color=COLORS["muted"])
+        self.cancel_schedule_button = ft.TextButton(
+            content="取消定时",
+            visible=False,
+            on_click=self.cancel_schedule,
+        )
+        self.schedule_dialog = ft.AlertDialog(
+            modal=True,
+            title=ft.Text("单次定时执行"),
+            content=ft.Column(
+                [
+                    ft.Row(
+                        [
+                            self.schedule_date_field,
+                            self.schedule_time_field,
+                        ],
+                        spacing=12,
+                    ),
+                    ft.Text("执行内容", size=11, color=COLORS["muted"]),
+                    self.schedule_mode_selector,
+                    self.schedule_message,
+                ],
+                spacing=12,
+                tight=True,
+                width=500,
+            ),
+            actions=[
+                ft.TextButton(content="取消", on_click=self.close_schedule_dialog),
+                self.cancel_schedule_button,
+                ft.Button(content="设置定时", on_click=self.save_schedule),
+            ],
         )
 
         self.cards_grid = ft.ResponsiveRow(
@@ -465,5 +539,7 @@ class AssistantDashboard(
         self._reload_task_settings_roles(update=False)
         self.page.add(self._build_layout())
         self.refresh_cards()
+        self._refresh_schedule_summary()
         self.append_log("INFO", "中控台已启动，等待执行")
         self.page.run_task(self._ui_update_pump)
+        self.page.run_task(self._schedule_pump)

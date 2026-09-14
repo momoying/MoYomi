@@ -1160,12 +1160,31 @@ def _leave_team_to_courtyard() -> bool:
     return _exit_gathering_to_courtyard()
 
 
+def _prepare_leader_team() -> bool:
+    """发起集结 → 确认成员和副本 → 配置并创建队伍。"""
+    # 1. 集结入口点击后可能仍可见，由后续成员页面确认进入成功。
+    if not _wait_and_click(
+        "rally",
+        "集结",
+        PAGE_WAIT_SECONDS,
+        confirm_disappears=False,
+    ):
+        return False
+    # 2. 确认成员后再设置觉醒类型和层数，最后创建队伍。
+    if not _confirm_members_and_select_dungeon():
+        return False
+    if not _configure_and_create_team():
+        return False
+    return True
+
+
 def run(
     role: str = "leader",
     completed_battles: int = 0,
     on_battle_completed: Optional[Callable[[int, int], None]] = None,
 ) -> bool | str:
-    """执行同心队队长战斗或成员预存流程。"""
+    """清理残留集结 → 进入同心队 → 成员预存或队长战斗 → 退出。"""
+    # 1. 校验身份并清除残留集结状态，再进入同心队页面。
     if role not in {"leader", "member"}:
         print("[ERROR] 未配置有效的同心队身份")
         return False
@@ -1181,28 +1200,23 @@ def run(
         return False
     if not _wait_and_click("heart_team", "同心队", PAGE_WAIT_SECONDS):
         return False
+    # 2. 成员执行预存流程并自行返回庭院，不进入队长战斗分支。
     if role == "member":
         return _run_member_reserve()
 
-    if not _wait_and_click(
-        "rally",
-        "集结",
-        PAGE_WAIT_SECONDS,
-        confirm_disappears=False,
-    ):
-        return False
-    if not _confirm_members_and_select_dungeon():
-        return False
-    if not _configure_and_create_team():
+    # 3. 队长集结并创建队伍，从已记录场次继续，每场完成回调中控。
+    if not _prepare_leader_team():
         return False
     battle_result = _run_battles(
         completed_battles=completed_battles,
         on_battle_completed=on_battle_completed,
     )
+    # 4. 保留已完成但退出失败的专用状态，防止中控重复执行战斗。
     if battle_result == BATTLES_COMPLETED_CLEANUP_FAILED:
         return BATTLES_COMPLETED_CLEANUP_FAILED
     if not battle_result:
         return False
+    # 5. 战斗已完成，收尾异常仅触发恢复；用户中止仍原样向上传递。
     try:
         cleanup_succeeded = _leave_team_to_courtyard()
     except KeyboardInterrupt:

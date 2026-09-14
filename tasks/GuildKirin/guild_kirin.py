@@ -291,10 +291,32 @@ def _return_to_main() -> bool:
     )
 
 
+def _challenge_and_confirm_completion() -> bool:
+    """挑战并准备 → 等待战斗结算 → 关闭结果 → 复核已挑战标志。"""
+    # 1. 挑战和准备逐步确认，进入战斗后等待胜负结果。
+    if not _wait_and_click("challenge", "挑战", PAGE_WAIT_SECONDS):
+        return False
+    if not _wait_and_click("prepare", "准备", PREPARE_WAIT_SECONDS):
+        return False
+    battle_result = _wait_for_battle_result()
+    if battle_result is None:
+        return False
+    # 2. 关闭结算并复核狩猎页，不能仅凭战斗结果窗口报告任务完成。
+    result_name, result_rect = battle_result
+    if not _close_battle_result(result_name, result_rect):
+        return False
+    if _wait_for_hunting_status() != "already_challenged":
+        print("[ERROR] 战斗结算后未确认已挑战状态")
+        return False
+    return True
+
+
 def run() -> bool:
+    """进入狩猎战 → 按需挑战并确认完成 → 返回庭院。"""
     utils.connect_to_mumu()
     print("开始寮麒麟任务")
 
+    # 1. 从庭院展开阴阳寮入口，逐页进入狩猎战。
     if not _ensure_guild_menu_expanded():
         return False
     if not _wait_and_click("guild_entry", "阴阳寮", PAGE_WAIT_SECONDS):
@@ -302,27 +324,18 @@ def run() -> bool:
     if not _wait_and_click("hunting_entry", "狩猎战", PAGE_WAIT_SECONDS):
         return False
 
+    # 2. 已挑战则跳过战斗；识别失败仍按失败处理。
     status = _wait_for_hunting_status()
     if status is None:
         return False
 
     if status == "challenge":
-        if not _wait_and_click("challenge", "挑战", PAGE_WAIT_SECONDS):
-            return False
-        if not _wait_and_click("prepare", "准备", PREPARE_WAIT_SECONDS):
-            return False
-        battle_result = _wait_for_battle_result()
-        if battle_result is None:
-            return False
-        result_name, result_rect = battle_result
-        if not _close_battle_result(result_name, result_rect):
-            return False
-        if _wait_for_hunting_status() != "already_challenged":
-            print("[ERROR] 战斗结算后未确认已挑战状态")
+        if not _challenge_and_confirm_completion():
             return False
     else:
         print("当前寮麒麟已经挑战过，跳过战斗")
 
+    # 3. 无论本次是否战斗，都确认回到主界面后才报告成功。
     if not _return_to_main():
         return False
     print("寮麒麟任务完成，已返回主界面")

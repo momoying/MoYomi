@@ -425,15 +425,18 @@ def _wait_for_main(timeout: float = MAIN_WAIT_SECONDS) -> bool:
 
 
 def run(cross_region_only: bool = False) -> bool:
+    """进入好友页 → 确定类别顺序 → 分栏点赞并确认 → 返回庭院。"""
     utils.connect_to_mumu()
     mode_label = "仅跨区好友" if cross_region_only else "普通与跨区好友"
     print(f"开始好友点赞任务（{mode_label}），截图间隔 0.5 秒")
 
+    # 1. 展开庭院菜单并进入好友页面。
     if not _ensure_friend_menu_expanded():
         return False
     if not _wait_and_click("friend", "好友", MAIN_WAIT_SECONDS):
         return False
 
+    # 2. 普通模式先处理当前展开栏；跨区模式仅处理跨区好友。
     first_category = _wait_for_active_category()
     if first_category is None:
         return False
@@ -443,6 +446,7 @@ def run(cross_region_only: bool = False) -> bool:
         second_category = "cross_region" if first_category == "friend" else "friend"
         categories = (first_category, second_category)
 
+    # 3. 必要时切换类别，等待已点赞标志确认成功后才处理下一栏。
     for index, category in enumerate(categories):
         if index == 0 and category != first_category:
             if not _switch_category(category):
@@ -456,6 +460,7 @@ def run(cross_region_only: bool = False) -> bool:
         if not liked:
             return False
 
+    # 4. 关闭好友页，并以主界面标志确认返回庭院。
     if not _wait_and_click("back", "返回", BACK_WAIT_SECONDS):
         return False
     if not _wait_for_main():

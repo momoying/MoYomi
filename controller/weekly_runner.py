@@ -2,20 +2,18 @@
 
 from __future__ import annotations
 
-import hashlib
 import json
-import os
-import random
-from datetime import date, datetime, timedelta
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, Optional
 
 from controller.constants import *
-from controller.types import ControllerServices, EventCallback
 from controller.runtime import _emit_event, print
-from controller.state_store import *
 from controller.scheduler import build_weekly_work_queue
+from controller.state_store import *
 from controller.task_services import _run_task_recovery, _services_from_runtime_settings
+from controller.types import ControllerServices, EventCallback
+from module.diagnostics import capture_error_screenshot
 
 
 def run_weekly(

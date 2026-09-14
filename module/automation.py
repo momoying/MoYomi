@@ -137,7 +137,6 @@ def connect_to_mumu(force=False):
     connection_key = (str(adb_path), str(adb_port))
     if not force and _adb_connected_key == connection_key:
         return True
-
     try:
         result = subprocess.run(
             [adb_path, "connect", adb_port],
@@ -154,14 +153,20 @@ def connect_to_mumu(force=False):
             text=True,
             timeout=8,
         )
+
         connected = (
             state.returncode == 0
             and state.stdout.strip() == "device"
         )
         _adb_connected_key = connection_key if connected else None
+        # print("result：{}".format(result))
+        # print("state：{}".format(state))
+        # print("connected：{}".format(connected))
+        # print("_adb_connected_key：{}".format(_adb_connected_key))
         return connected
     except Exception:
         _invalidate_adb_connection()
+        # print("连接失败")
         return False
 
 

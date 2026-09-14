@@ -94,7 +94,7 @@ def _is_courtyard(frame) -> bool:
 def find_highest_priority_action(
     frame,
 ) -> tuple[Optional[str], Optional[MatchSpec], Optional[float], Optional[Rect]]:
-    """先识别协战奖励，再按 2、4、1、3 返回首个命中的按钮。"""
+    """按动作表顺序返回首个命中的安全恢复操作。"""
     for name, spec in ACTION_SPECS:
         score, rect = _match(frame, name, spec)
         if rect is not None:
@@ -158,8 +158,8 @@ def recover_to_courtyard(
     click_count = 0
     LOGGER.info(
         "运行",
-        "开始任务超时恢复，优先处理协战奖励，按钮优先级："
-        "返回庭院 > 返回 > 粉色关闭 > 红色关闭"
+        "开始任务超时恢复，按钮优先级：返回庭院 > 返回 > 粉色关闭 > "
+        "红色关闭 > 手机绑定取消 > 前往绑定 > 协战奖励"
     )
 
     while time.monotonic() - started_at < timeout:

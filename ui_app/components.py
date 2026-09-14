@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import io
 from datetime import datetime
-from typing import Any, Callable
+from typing import Any, Callable, Optional
 
 import flet as ft
 
@@ -47,6 +47,7 @@ class AccountCardView:
     ) -> None:
         self.account = account
         self.system = system
+        self.task_mode = task_mode
         self.status = "pending"
         self.status_text = ft.Text(size=11, color=COLORS["muted"])
         self.task_views: dict[str, TaskStatusView] = {}
@@ -127,6 +128,8 @@ class AccountCardView:
                     due_count == 0 and merchant_style is not None,
                     merchant_style or "default",
                 )
+                if task_view.status == "unavailable":
+                    task_view.control.visible = False
             self.task_views[task_name] = task_view
 
         system_icon = (
@@ -143,19 +146,24 @@ class AccountCardView:
             content=ft.Row(
                 [
                     ft.Icon(system_icon, color=system_color, size=14),
-                    ft.Text(system, color=system_color, size=11, weight=ft.FontWeight.BOLD),
+                    ft.Text(
+                        system,
+                        color=system_color,
+                        size=11,
+                        weight=ft.FontWeight.BOLD,
+                    ),
                 ],
                 spacing=5,
                 tight=True,
             ),
         )
-        task_grid = ft.ResponsiveRow(
+        self.task_grid = ft.ResponsiveRow(
             [self.task_views[name].control for name in task_order],
             columns=12,
             spacing=8,
             run_spacing=8,
         )
-        for control in task_grid.controls:
+        for control in self.task_grid.controls:
             control.col = 12 if task_mode == controller.WEEKLY_MODE else 6
 
         self.control = ft.Container(
@@ -200,12 +208,32 @@ class AccountCardView:
                         vertical_alignment=ft.CrossAxisAlignment.CENTER,
                     ),
                     ft.Divider(height=4, color="transparent"),
-                    task_grid,
+                    self.task_grid,
                 ],
                 spacing=8,
             ),
         )
         self.refresh_overall()
+
+    def refresh_key_results(self) -> None:
+        """保持关键任务展示状态与任务开放时间同步。"""
+        if self.task_mode != controller.DAILY_MODE:
+            return
+        merchant = self.task_views[controller.MERCHANT_TASK]
+        if merchant.status == "unavailable":
+            merchant.control.visible = False
+
+    def important_result_labels(self) -> list[str]:
+        """返回当前可见、值得用户关注的悬赏与奸商结果。"""
+        if self.task_mode != controller.DAILY_MODE:
+            return []
+        labels: list[str] = []
+        for task_name in (controller.BOUNTY_TASK, controller.MERCHANT_TASK):
+            view = self.task_views[task_name]
+            if not view.control.visible or view.status != "done" or not view.highlighted:
+                continue
+            labels.append(str(view.detail.value))
+        return labels
 
     def set_phase(self, status: str, text: str) -> None:
         self.status = status

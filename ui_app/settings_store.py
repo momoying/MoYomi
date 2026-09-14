@@ -11,6 +11,15 @@ from typing import Any
 from ui_app.constants import *
 
 
+_LEGACY_SCHEDULE_KEYS = (
+    "scheduled_run_enabled",
+    "scheduled_run_time",
+    "scheduled_run_mode",
+    "scheduled_run_weekdays",
+    "scheduled_run_last_triggered_at",
+)
+
+
 def resolve_mumu_manager_path(mumu_path: str | Path) -> Path:
     """由 MuMu 安装根目录定位实例管理程序。"""
     return Path(mumu_path) / "nx_main" / "MuMuManager.exe"
@@ -42,6 +51,8 @@ def load_ui_settings(path: Path = SETTINGS_PATH) -> dict[str, Any]:
                 "timeout_screenshot_keep_count"
             ]
         settings.update(raw)
+    for key in _LEGACY_SCHEDULE_KEYS:
+        settings.pop(key, None)
     settings.pop("timeout_screenshot_keep_count", None)
     try:
         settings["screenshot_interval"] = min(

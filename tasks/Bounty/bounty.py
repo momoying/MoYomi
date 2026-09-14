@@ -319,10 +319,11 @@ def _check_all_bounties() -> Optional[str]:
 
 
 def check_bounty() -> BountyResult:
-    """执行检测并返回可供中控使用的结构化结果。"""
+    """进入并确认悬赏页 → 检测同格勾玉协作 → 退出 → 返回结构化结果。"""
     utils.connect_to_mumu()
     print("开始检测悬赏")
 
+    # 1. 先识别恒定入口，再确认进入悬赏页，避免把错误页面判为无协作。
     _, entry_rect, best_score = _wait_for_template(
         "bounty",
         "悬赏入口",
@@ -354,12 +355,15 @@ def check_bounty() -> BountyResult:
         )
         return BountyResult.ERROR
 
+    # 2. 只认同一格中的协/享标记和勾玉，保留两类协作的区别。
     collaboration_kind = _check_all_bounties()
 
+    # 3. 先退出页面；退出失败仍返回 ERROR，交给中控恢复。
     if not _wait_and_click("back", "悬赏页退出按钮", BACK_WAIT_SECONDS):
         return BountyResult.ERROR
     print("已退出悬赏页")
 
+    # 4. 未发现勾玉是有效检测结果，与执行失败分开返回。
     if collaboration_kind == "sharing":
         return BountyResult.SHARING_MAGATAMA_COLLABORATION
     if collaboration_kind == "cooperation":
