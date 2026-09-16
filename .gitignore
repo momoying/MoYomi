@@ -18,6 +18,7 @@ config/account_status.json
 config/ui_settings.json
 cfg.txt
 /config/serverchan_notification_state.json
+/config/update_state.json
 .env
 
 # Local OCR models

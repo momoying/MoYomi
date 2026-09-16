@@ -13,6 +13,7 @@ import main as controller
 
 from module.appearance import DEFAULT_ACCENT
 from module.notifications import get_serverchan_sendkey
+from module import updater
 from ui_app.components import *
 from ui_app.constants import *
 from ui_app.pages.daily import DailyPageMixin
@@ -386,6 +387,58 @@ class AssistantDashboard(
         )
         self.serverchan_status = ft.Text(size=11, color=COLORS["muted"])
         self._refresh_serverchan_status()
+        self.available_update: Optional[updater.ReleaseInfo] = None
+        self.update_status = ft.Text(
+            f"当前版本 {updater.APP_VERSION}",
+            size=11,
+            color=COLORS["muted"],
+        )
+        self.update_progress = ft.ProgressRing(
+            width=16,
+            height=16,
+            stroke_width=2,
+            visible=False,
+            color=COLORS["active"],
+        )
+        self.update_check_button = ft.Button(
+            content="检查更新",
+            icon=ft.Icons.SYSTEM_UPDATE_ALT_ROUNDED,
+            on_click=self.check_for_updates,
+        )
+        self.update_dialog_title = ft.Text("发现新版本")
+        self.update_dialog_notes = ft.Text(
+            size=12,
+            color=COLORS["muted"],
+            selectable=True,
+        )
+        self.update_dialog_message = ft.Text(size=11, color=COLORS["muted"])
+        self.update_install_button = ft.Button(
+            content="立即更新",
+            icon=ft.Icons.DOWNLOAD_ROUNDED,
+            on_click=self.install_available_update,
+        )
+        self.update_dialog = ft.AlertDialog(
+            modal=True,
+            title=self.update_dialog_title,
+            content=ft.Column(
+                [
+                    self.update_dialog_notes,
+                    ft.Row(
+                        [self.update_progress, self.update_dialog_message],
+                        spacing=8,
+                    ),
+                ],
+                spacing=12,
+                tight=True,
+                width=520,
+                scroll=ft.ScrollMode.AUTO,
+            ),
+            actions=[
+                ft.TextButton(content="稍后", on_click=self.close_update_dialog),
+                ft.TextButton(content="打开发布页", on_click=self.open_release_page),
+                self.update_install_button,
+            ],
+        )
         self.wallpaper_path_field = ft.TextField(
             label="壁纸图片",
             value=str(self.settings.get("wallpaper_path", "")),
@@ -452,6 +505,7 @@ class AssistantDashboard(
                 self.serverchan_sendkey,
                 self.serverchan_save_key_button,
                 self.serverchan_clear_key_button,
+                self.update_check_button,
             ]
         )
         self.task_settings_state: Optional[dict[str, Any]] = None
@@ -538,8 +592,10 @@ class AssistantDashboard(
 
         self._reload_task_settings_roles(update=False)
         self.page.add(self._build_layout())
+        self.load_update_result()
         self.refresh_cards()
         self._refresh_schedule_summary()
         self.append_log("INFO", "中控台已启动，等待执行")
         self.page.run_task(self._ui_update_pump)
         self.page.run_task(self._schedule_pump)
+        self.page.run_task(self._startup_update_check)

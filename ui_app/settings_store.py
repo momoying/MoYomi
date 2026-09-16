@@ -21,8 +21,25 @@ _LEGACY_SCHEDULE_KEYS = (
 
 
 def resolve_mumu_manager_path(mumu_path: str | Path) -> Path:
-    """由 MuMu 安装根目录定位实例管理程序。"""
-    return Path(mumu_path) / "nx_main" / "MuMuManager.exe"
+    """兼容新版 nx_main 与 MuMu 12 旧版 shell 安装结构。"""
+    root = Path(mumu_path).expanduser()
+    candidates = (
+        root / "nx_main" / "MuMuManager.exe",
+        root / "shell" / "MuMuManager.exe",
+        root / "MuMuManager.exe",
+    )
+    return next((path for path in candidates if path.is_file()), candidates[0])
+
+
+def resolve_mumu_adb_path(mumu_path: str | Path) -> Path | None:
+    """在已选择的 MuMu 安装目录中查找配套 adb.exe。"""
+    root = Path(mumu_path).expanduser()
+    candidates = (
+        root / "nx_main" / "adb.exe",
+        root / "shell" / "adb.exe",
+        root / "adb.exe",
+    )
+    return next((path for path in candidates if path.is_file()), None)
 
 
 def save_ui_settings(settings: dict[str, Any], path: Path = SETTINGS_PATH) -> None:

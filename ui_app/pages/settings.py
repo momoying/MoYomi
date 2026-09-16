@@ -5,11 +5,14 @@ from __future__ import annotations
 import asyncio
 import importlib.util
 import json
+import os
 import queue
 import re
+import shutil
 import sys
 import threading
 import traceback
+import webbrowser
 from contextlib import redirect_stderr, redirect_stdout
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -20,6 +23,7 @@ import flet as ft
 import main as controller
 from module.appearance import DEFAULT_ACCENT, extract_monet_palette
 from module.notifications import clear_project_sendkey, get_serverchan_sendkey, set_project_sendkey
+from module import updater
 from ui_app.constants import *
 from ui_app.settings_store import *
 from ui_app.components import *
@@ -31,6 +35,7 @@ class SettingsPageMixin:
             "global": self._build_global_settings_panel(),
             "tasks": self._build_task_settings_panel(),
             "wallpaper": self._build_wallpaper_settings_panel(),
+            "update": self._build_update_settings_panel(),
         }
         self.settings_content_host = ft.Container(
             content=self.settings_sections[self.active_settings_section],
@@ -57,6 +62,7 @@ class SettingsPageMixin:
             ("global", "全局设置", ft.Icons.SETTINGS_ROUNDED),
             ("tasks", "任务设置", ft.Icons.TUNE_ROUNDED),
             ("wallpaper", "壁纸设置", ft.Icons.WALLPAPER_ROUNDED),
+            ("update", "更新设置", ft.Icons.SYSTEM_UPDATE_ALT_ROUNDED),
         )
         controls: list[ft.Control] = []
         for key, label, icon in entries:
@@ -192,6 +198,137 @@ class SettingsPageMixin:
             ft.Icons.SETTINGS_ROUNDED,
             settings_content,
         )
+
+
+    def _build_update_settings_panel(self) -> ft.Control:
+        content = ft.Column(
+            [
+                ft.Text(
+                    "应用会在启动后自动检查 GitHub Releases，也可以在这里手动检查。",
+                    size=12,
+                    color=COLORS["muted"],
+                ),
+                ft.Divider(height=10, color=COLORS["border"]),
+                ft.Row(
+                    [
+                        self.update_status,
+                        self.update_check_button,
+                    ],
+                    alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
+                ),
+            ],
+            spacing=8,
+        )
+        return self._panel(
+            "关于与更新",
+            ft.Icons.SYSTEM_UPDATE_ALT_ROUNDED,
+            content,
+        )
+
+
+    def load_update_result(self) -> None:
+        result = updater.consume_update_result()
+        if result is None:
+            return
+        self.update_status.value = result.get("message") or (
+            f"当前版本 {updater.APP_VERSION}"
+        )
+        self.update_status.color = (
+            COLORS["done"]
+            if result.get("status") == "success"
+            else COLORS["error"]
+        )
+
+
+    async def _startup_update_check(self) -> None:
+        await self._check_for_updates(silent=True)
+
+
+    async def check_for_updates(self, _event: Any = None) -> None:
+        await self._check_for_updates(silent=False)
+
+
+    async def _check_for_updates(self, *, silent: bool) -> None:
+        if self.update_check_button.disabled:
+            return
+        self.update_check_button.disabled = True
+        if not silent:
+            self.update_status.value = "正在检查更新…"
+            self.update_status.color = COLORS["muted"]
+            self._safe_update()
+        try:
+            release = await asyncio.to_thread(updater.check_for_update)
+        except updater.UpdateError as exc:
+            if not silent:
+                self.update_status.value = str(exc)
+                self.update_status.color = COLORS["error"]
+        else:
+            if release is None:
+                if not silent:
+                    self.update_status.value = (
+                        f"当前已是最新版本 {updater.APP_VERSION}"
+                    )
+                    self.update_status.color = COLORS["done"]
+            else:
+                self.available_update = release
+                self.update_status.value = f"发现新版本 {release.version}"
+                self.update_status.color = COLORS["active"]
+                self.update_dialog_title.value = f"发现新版本 {release.version}"
+                notes = release.notes or "本次 Release 未填写更新说明。"
+                if len(notes) > 2000:
+                    notes = notes[:2000].rstrip() + "\n…"
+                self.update_dialog_notes.value = notes
+                self.update_dialog_message.value = ""
+                self.update_dialog_message.color = COLORS["muted"]
+                self.update_progress.visible = False
+                self.update_install_button.disabled = False
+                self.page.show_dialog(self.update_dialog)
+        finally:
+            self.update_check_button.disabled = bool(self.running or self.tool_running)
+            self._safe_update()
+
+
+    def close_update_dialog(self, _event: Any = None) -> None:
+        self.page.pop_dialog()
+
+
+    async def open_release_page(self, _event: Any = None) -> None:
+        if self.available_update is not None:
+            await asyncio.to_thread(webbrowser.open, self.available_update.page_url)
+
+
+    async def install_available_update(self, _event: Any = None) -> None:
+        release = self.available_update
+        if release is None:
+            return
+        if self.running or self.tool_running:
+            self.update_dialog_message.value = "请先停止正在运行的任务或小工具"
+            self.update_dialog_message.color = COLORS["warning"]
+            self._safe_update()
+            return
+
+        self.update_install_button.disabled = True
+        self.update_progress.visible = True
+        self.update_dialog_message.value = "正在下载并验证更新…"
+        self.update_dialog_message.color = COLORS["muted"]
+        self._safe_update()
+        prepared: Optional[updater.PreparedUpdate] = None
+        try:
+            prepared = await asyncio.to_thread(updater.download_release, release)
+            if self.running or self.tool_running:
+                raise updater.UpdateError("任务已经启动，本次更新已取消")
+            updater.launch_installer(prepared, release)
+        except Exception as exc:
+            if prepared is not None:
+                shutil.rmtree(prepared.temporary_dir, ignore_errors=True)
+            self.update_progress.visible = False
+            self.update_install_button.disabled = False
+            self.update_dialog_message.value = f"更新准备失败：{exc}"
+            self.update_dialog_message.color = COLORS["error"]
+            self._safe_update()
+            return
+
+        os._exit(0)
 
 
     def _build_task_settings_panel(self) -> ft.Control:
@@ -612,9 +749,23 @@ class SettingsPageMixin:
         if self.running:
             return
         current_index = str(self.mumu_instance.value or "")
-        manager_path = resolve_mumu_manager_path(
-            str(self.mumu_path_field.value or DEFAULT_MUMU_PATH)
-        )
+        mumu_path = str(self.mumu_path_field.value or DEFAULT_MUMU_PATH)
+        manager_path = resolve_mumu_manager_path(mumu_path)
+        detected_adb = resolve_mumu_adb_path(mumu_path)
+        current_adb = Path(str(self.adb_path_field.value or "")).expanduser()
+        if detected_adb is not None and not current_adb.is_file():
+            self.adb_path_field.value = str(detected_adb)
+        if not manager_path.is_file():
+            self.mumu_instances = []
+            self.mumu_instance.options = []
+            self.mumu_instance.value = None
+            self._update_mumu_status()
+            self.settings_message.value = (
+                "未找到 MuMuManager.exe，已检查 nx_main 和 shell 目录"
+            )
+            self.settings_message.color = COLORS["error"]
+            self._safe_update()
+            return
         self.mumu_instances = discover_running_mumu_instances(manager_path)
         available_indexes = {item["index"] for item in self.mumu_instances}
         if current_index in available_indexes:
@@ -626,8 +777,12 @@ class SettingsPageMixin:
         self.mumu_instance.options = self._mumu_dropdown_options()
         self.mumu_instance.value = selected_index
         self._update_mumu_status()
-        self.settings_message.value = "已重新扫描"
-        self.settings_message.color = COLORS["muted"]
+        if self.mumu_instances:
+            self.settings_message.value = "已重新扫描"
+            self.settings_message.color = COLORS["muted"]
+        else:
+            self.settings_message.value = "已找到 MuMuManager，但没有运行中的实例"
+            self.settings_message.color = COLORS["warning"]
         self._safe_update()
 
 
