@@ -111,6 +111,14 @@ class MerchantAssets(TaskAssets):
         name='price_50',
     )
 
+    # 售价 60 勾玉数字
+    I_PRICE_60 = ImageAsset(
+        file=RES_DIR / "price_60.png",
+        region=None,
+        threshold=0.94,
+        name='price_60',
+    )
+
     # 售价 70 勾玉数字
     I_PRICE_70 = ImageAsset(
         file=RES_DIR / "price_70.png",
@@ -144,6 +152,7 @@ class MerchantAssets(TaskAssets):
 
     PRICE_DIGIT_LEFT = {
             "50": 34,
+            "60": 34,
             "70": 0,
             "80": 34,
             "90": 34,
@@ -163,6 +172,7 @@ class MerchantAssets(TaskAssets):
 
     PRICE_TEMPLATES = {
         '50': I_PRICE_50.path,
+        '60': I_PRICE_60.path,
         '70': I_PRICE_70.path,
         '80': I_PRICE_80.path,
         '90': I_PRICE_90.path,

@@ -24,7 +24,7 @@ BOUNTY_RESULTS = {
     "sharing_magatama_collaboration": "现世勾协",
     "no_magatama_collaboration": "无勾协",
 }
-MERCHANT_PRICES = (50, 70, 80, 90)
+MERCHANT_PRICES = (50, 60, 70, 80, 90)
 
 
 class ServerChanError(RuntimeError):

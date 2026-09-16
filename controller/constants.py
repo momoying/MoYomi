@@ -156,6 +156,7 @@ BOUNTY_RESULT_DETAILS = {
 
 MERCHANT_RESULT_DETAILS = {
     "blue_ticket_50": "发现50蓝票",
+    "blue_ticket_60": "发现60蓝票",
     "blue_ticket_70": "发现70蓝票",
     "blue_ticket_80": "发现80蓝票",
     "blue_ticket_90": "发现90蓝票",

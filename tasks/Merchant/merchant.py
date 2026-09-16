@@ -55,7 +55,7 @@ utils.config["screenshot_speed"] = SCREENSHOT_INTERVAL
 
 
 
-# 50/80/90 模板左侧带有三个价格共有的勾玉图标，70 模板已经只保留数字。
+# 50/60/80/90 模板左侧带有价格共有的勾玉图标，70 模板已经只保留数字。
 # 分类时统一只比较数字，避免公共图标把不同价格的相关系数拉得过近。
 # 刷新按钮可用时箭头是亮红色，使用后整个按钮会明显变暗。
 # 两张实测样本的红色像素亮度中位数约为 184/111，取中间值留出余量。
@@ -72,6 +72,7 @@ Rect = Tuple[int, int, int, int]
 
 class MerchantResult(str, Enum):
     BLUE_TICKET_50 = "blue_ticket_50"
+    BLUE_TICKET_60 = "blue_ticket_60"
     BLUE_TICKET_70 = "blue_ticket_70"
     BLUE_TICKET_80 = "blue_ticket_80"
     BLUE_TICKET_90 = "blue_ticket_90"
@@ -264,7 +265,7 @@ def _find_blue_ticket_rects(frame) -> list[Tuple[Rect, float]]:
 
 
 def _classify_blue_ticket_price(frame, ticket_rect: Rect) -> Tuple[Optional[str], dict[str, float]]:
-    """只在蓝票图标下方的小区域比较 50/70/80/90 四种价格。"""
+    """只在蓝票图标下方的小区域比较 50/60/70/80/90 五种价格。"""
     offset_left, offset_top, offset_right, offset_bottom = PRICE_SEARCH_OFFSET
     search_left = max(0, ticket_rect[0] + offset_left)
     search_top = max(0, ticket_rect[1] + offset_top)
@@ -662,6 +663,8 @@ def check_merchant() -> MerchantResult:
         return MerchantResult.ERROR
     if blue_ticket_price == "50":
         return MerchantResult.BLUE_TICKET_50
+    if blue_ticket_price == "60":
+        return MerchantResult.BLUE_TICKET_60
     if blue_ticket_price == "70":
         return MerchantResult.BLUE_TICKET_70
     if blue_ticket_price == "80":

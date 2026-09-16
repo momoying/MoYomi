@@ -393,7 +393,7 @@ def mark_remaining_merchant_tasks_skipped(
             if not task_is_enabled(system_state, MERCHANT_TASK):
                 continue
             if not task_is_due(MERCHANT_TASK, system_state, completed_at):
-                # 已检测过的 50/70/80/90 结果保持不变。
+                # 已检测过的 50/60/70/80/90 结果保持不变。
                 continue
             record_task_completion(MERCHANT_TASK, system_state, completed_at)
             set_task_record_result(

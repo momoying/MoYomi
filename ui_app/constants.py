@@ -106,6 +106,11 @@ TASK_HIGHLIGHT_STYLES = {
         "border": "#FFD166",
         "width": 3,
     },
+    "merchant_60": {
+        "colors": ("#55339A", "#0F7490", "#0E7490"),
+        "border": "#A5F3FC",
+        "width": 2,
+    },
     "merchant_70": {
         "colors": ("#40308A", "#176B87", "#256D85"),
         "border": "#67E8F9",
@@ -125,6 +130,7 @@ TASK_HIGHLIGHT_STYLES = {
 
 MERCHANT_HIGHLIGHT_STYLES = {
     "blue_ticket_50": "merchant_50",
+    "blue_ticket_60": "merchant_60",
     "blue_ticket_70": "merchant_70",
     "blue_ticket_80": "merchant_80",
     "blue_ticket_90": "merchant_90",
