@@ -10,6 +10,9 @@ env/
 .idea/
 .flet/
 
+# Local test suite
+/tests/
+
 # Local coding and maintenance notes
 DEVELOPMENT_GUIDE.md
 
@@ -27,6 +30,7 @@ models/
 # Runtime logs and diagnostic screenshots
 *.log
 /error_screenshots/
+/module/screenshot.png
 
 # Temporary files written by atomic JSON saves
 *.tmp
