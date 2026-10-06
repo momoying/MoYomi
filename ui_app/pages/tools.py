@@ -59,6 +59,7 @@ class ToolsPageMixin:
         self.tool_title.value = TOOL_LABELS[tool_name]
         self.tool_description.value = TOOL_DESCRIPTIONS[tool_name]
         self.secret_attempts_control.visible = tool_name == "secret_battle"
+        self.market_refresh_count_control.visible = tool_name == "market_sniper"
         self.tool_start_button.content = "开始"
         self._safe_update()
 
@@ -79,6 +80,7 @@ class ToolsPageMixin:
                     self.tool_title,
                     self.tool_description,
                     self.secret_attempts_control,
+                    self.market_refresh_count_control,
                     ft.Divider(height=8, color=COLORS["border"]),
                     ft.Row(
                         [
@@ -145,6 +147,17 @@ class ToolsPageMixin:
                 self.append_tool_log("WARN", "协战次数为 0，请先填写可用次数")
                 self._safe_update()
                 return
+        if self.active_tool == "market_sniper":
+            try:
+                refresh_count = int(str(self.market_refresh_count_field.value).strip())
+            except ValueError:
+                refresh_count = 0
+            if refresh_count <= 0:
+                self.tool_status.value = "请填写大于 0 的刷新次数"
+                self.tool_status.color = COLORS["warning"]
+                self.append_tool_log("WARN", "刷新次数需大于 0")
+                self._safe_update()
+                return
         if not self.save_settings():
             self.tool_status.value = "请先在设置页选择可用的 MuMu 实例"
             self.tool_status.color = COLORS["error"]
@@ -160,6 +173,7 @@ class ToolsPageMixin:
         self.start_button.disabled = True
         self.refresh_button.disabled = True
         self.secret_attempts_field.disabled = True
+        self.market_refresh_count_field.disabled = True
         self._set_global_settings_disabled(True)
         self.running_badge.visible = True
         self.running_badge_text.value = f"{TOOL_LABELS[self.active_tool]}运行中"
@@ -224,12 +238,26 @@ class ToolsPageMixin:
                 "SCREENSHOT_INTERVAL",
             ):
                 module.SCREENSHOT_INTERVAL = battle_interval
+            if tool_name == "market_sniper" and hasattr(
+                module,
+                "SCREENSHOT_INTERVAL",
+            ):
+                module.SCREENSHOT_INTERVAL = float(
+                    self.settings["screenshot_interval"]
+                )
             with redirect_stdout(writer), redirect_stderr(writer):
                 if tool_name == "secret_battle":
                     result = module.run(
                         stop_event=self.tool_stop_event,
                         attempts=int(self.settings["secret_battle_attempts"]),
                         attempts_callback=self._queue_secret_attempts,
+                    )
+                elif tool_name == "market_sniper":
+                    result = module.run(
+                        refresh_count=int(
+                            self.settings["market_sniper_refresh_count"]
+                        ),
+                        stop_event=self.tool_stop_event,
                     )
                 else:
                     result = module.run(stop_event=self.tool_stop_event)
@@ -301,6 +329,7 @@ class ToolsPageMixin:
         self.start_button.disabled = False
         self.refresh_button.disabled = False
         self.secret_attempts_field.disabled = False
+        self.market_refresh_count_field.disabled = False
         self._set_global_settings_disabled(False)
         self.running_badge.visible = False
         label = TOOL_LABELS.get(tool_name, tool_name)

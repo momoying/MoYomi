@@ -819,6 +819,9 @@ class SettingsPageMixin:
             )
             max_lines = int(str(self.log_max_lines.value).strip())
             secret_attempts = int(str(self.secret_attempts_field.value).strip())
+            market_refresh_count = int(
+                str(self.market_refresh_count_field.value).strip()
+            )
             recovery_retries = int(
                 str(self.recovery_retry_count.value).strip()
             )
@@ -853,6 +856,11 @@ class SettingsPageMixin:
             return None
         if secret_attempts < 0:
             self.settings_message.value = "协战次数不能小于 0"
+            self.settings_message.color = COLORS["error"]
+            self._safe_update()
+            return None
+        if market_refresh_count < 0:
+            self.settings_message.value = "商品刷新次数不能小于 0"
             self.settings_message.color = COLORS["error"]
             self._safe_update()
             return None
@@ -894,6 +902,7 @@ class SettingsPageMixin:
             "mumu_index": selected_mumu["index"],
             "adb_port": selected_mumu["adb_port"],
             "secret_battle_attempts": secret_attempts,
+            "market_sniper_refresh_count": market_refresh_count,
             "wallpaper_path": str(self.wallpaper_path_field.value or ""),
             "wallpaper_opacity": float(self.wallpaper_opacity.value or 0) / 100.0,
             "wallpaper_blur": float(self.wallpaper_blur.value or 0),

@@ -245,7 +245,14 @@ def build_detection_summary(
         lines.extend(["", "## 奸商检测"])
         for price in MERCHANT_PRICES:
             found = f"blue_ticket_{price}" in merchant_results
-            lines.append(f"- {price} 蓝票：{'有' if found else '无'}")
+            result = (
+                "有"
+                if found
+                else "未知"
+                if "unknown_price" in merchant_results
+                else "无"
+            )
+            lines.append(f"- {price} 蓝票：{result}")
 
     slot_key = slot_start.isoformat(timespec="seconds")
     title = f"阴阳师检测结果 {now:%m-%d %H:%M}"

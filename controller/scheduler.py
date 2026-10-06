@@ -578,3 +578,19 @@ def build_work_queue(
     # 不改变上方账号/系统的随机遍历顺序。成员在原位置先执行其他任务，
     # 同心队预存统一追加为收尾队列，确保发生在当天队长战斗之后。
     return queue + deferred_member_reserves
+
+
+def build_single_task_work_queue(
+    state: dict[str, Any],
+    now: datetime,
+    task_name: str,
+) -> list[WorkItem]:
+    """只保留所选任务已启用且到期的账号、系统和区服。"""
+    if task_name not in TASK_ORDER:
+        raise ValueError(f"不支持的日常任务: {task_name}")
+    return [
+        WorkItem(item.account_name, item.system, (task,), item.region)
+        for item in build_work_queue(state, now)
+        for task in item.tasks
+        if task.task_name == task_name
+    ]

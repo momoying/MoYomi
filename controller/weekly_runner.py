@@ -11,8 +11,12 @@ from controller.constants import *
 from controller.runtime import _emit_event, print
 from controller.scheduler import build_weekly_work_queue
 from controller.state_store import *
-from controller.task_services import _run_task_recovery, _services_from_runtime_settings
-from controller.types import ControllerServices, EventCallback
+from controller.task_services import (
+    _invoke_task_runner,
+    _run_task_recovery,
+    _services_from_runtime_settings,
+)
+from controller.types import ControllerServices, EventCallback, TaskResult
 from module.diagnostics import capture_error_screenshot
 
 
@@ -24,8 +28,11 @@ def run_weekly(
     event_callback: Optional[EventCallback] = None,
     stop_event: Any = None,
     runtime_settings: Optional[dict[str, Any]] = None,
+    single_task_name: Optional[str] = None,
 ) -> bool:
     """执行到期寄售屋周常，并在购买或确认已购买后返回庭院。"""
+    if single_task_name not in (None, CONSIGNMENT_HOUSE_TASK):
+        raise ValueError(f"不支持的周常任务: {single_task_name}")
     try:
         daily_state, daily_migrated = load_state(status_path)
         if daily_migrated:
@@ -162,24 +169,26 @@ def run_weekly(
             run_index=1,
             run_count=1,
         )
-        result = CONSIGNMENT_ERROR
+        outcome = TaskResult(completed=False, result=CONSIGNMENT_ERROR)
         max_attempts = max(1, services.task_recovery_retries + 1)
         for attempt_index in range(1, max_attempts + 1):
             failure_stage = "failed"
             try:
-                raw_result = runner()
-                result = getattr(raw_result, "value", str(raw_result))
+                outcome = _invoke_task_runner(
+                    CONSIGNMENT_HOUSE_TASK,
+                    runner,
+                    1,
+                    1,
+                    daily_state["accounts"][account_name]["systems"][system],
+                )
             except Exception as exc:
-                result = CONSIGNMENT_ERROR
+                outcome = TaskResult(completed=False, result=CONSIGNMENT_ERROR)
                 failure_message = f"寄售屋执行异常：{exc}"
                 failure_stage = "exception"
             else:
                 failure_message = "寄售屋执行失败"
 
-            if result in {
-                CONSIGNMENT_ALREADY_PURCHASED,
-                CONSIGNMENT_PURCHASED,
-            }:
+            if outcome.completed:
                 break
             if not (stop_event is not None and stop_event.is_set()):
                 capture_error_screenshot(
@@ -218,6 +227,7 @@ def run_weekly(
             print(f"[INFO] {recovery_message}，重新执行寄售屋")
 
         completed_at = now_provider().astimezone().isoformat(timespec="seconds")
+        result = outcome.result
         record = weekly_task_record(weekly_state, account_name, system)
         record["completed_at"] = completed_at
         record["result"] = result

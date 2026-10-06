@@ -17,11 +17,13 @@ TOOLS_DIR = ROOT_DIR / "tasks"
 TOOL_MODULE_PATHS = {
     "story_skip": TOOLS_DIR / "StorySkip" / "story_skip.py",
     "secret_battle": TOOLS_DIR / "SecretBattle" / "secret_battle.py",
+    "market_sniper": TOOLS_DIR / "MarketSniper" / "market_sniper.py",
 }
 
 TOOL_LABELS = {
     "story_skip": "剧情跳过",
     "secret_battle": "一键秘闻",
+    "market_sniper": "抢商品",
 }
 
 TOOL_DESCRIPTIONS = {
@@ -32,6 +34,10 @@ TOOL_DESCRIPTIONS = {
     "secret_battle": (
         "重复挑战当前秘闻层；获得黑蛋、协战次数耗尽或挑战失败时自动停止。\n"
         "鹿丸可过：红叶，雨女，大天狗，海坊主，青行灯，吸血姬，彼岸花，清姬，雪童子，青蛙瓷器，犬神，河童"
+    ),
+    "market_sniper": (
+        "在寄售屋藏品页随机点击藏品预览，按设定次数刷新列表；"
+        "发现商品后随机点击第一行并购买。每次刷新间隔随机 1–2 秒。"
     ),
 }
 
@@ -54,6 +60,7 @@ DEFAULT_SETTINGS = {
     "mumu_index": None,
     "adb_port": None,
     "secret_battle_attempts": 0,
+    "market_sniper_refresh_count": 0,
     "wallpaper_path": "",
     "wallpaper_opacity": 0.46,
     "wallpaper_blur": 4.0,

@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import os
 import random
+import re
 import sys
 import time
 from enum import Enum
@@ -23,6 +25,7 @@ from module import automation as utils
 from module.base.device import TaskDevice
 from module.menu import try_open_activity_menu_once
 from module.logging import TaskLogger
+from module.model_paths import OCR_MODEL_DIR
 
 
 from tasks.Merchant.assets import MerchantAssets
@@ -36,7 +39,6 @@ BLUE_TICKET_TEMPLATE_THRESHOLDS = ASSETS.BLUE_TICKET_TEMPLATE_THRESHOLDS
 PRICE_SEARCH_OFFSET = ASSETS.PRICE_SEARCH_OFFSET
 PRICE_DIGIT_LEFT = ASSETS.PRICE_DIGIT_LEFT
 PRICE_MATCH_THRESHOLD = ASSETS.PRICE_MATCH_THRESHOLD
-PRICE_WIN_MARGIN = ASSETS.PRICE_WIN_MARGIN
 POPULAR_FALLBACK_THRESHOLD = ASSETS.POPULAR_FALLBACK_THRESHOLD
 REFRESH_RED_VALUE_THRESHOLD = ASSETS.REFRESH_RED_VALUE_THRESHOLD
 REFRESH_RED_MIN_PIXELS = ASSETS.REFRESH_RED_MIN_PIXELS
@@ -49,14 +51,16 @@ print = LOGGER.legacy_print
 
 SCREENSHOT_INTERVAL = 0.5
 utils.config["screenshot_speed"] = SCREENSHOT_INTERVAL
+REFRESH_STATE_MAX_FRAMES = 6
+REFRESH_STATE_STABLE_FRAMES = 2
 
 
 
 
 
 
-# 50/60/80/90 模板左侧带有价格共有的勾玉图标，70 模板已经只保留数字。
-# 分类时统一只比较数字，避免公共图标把不同价格的相关系数拉得过近。
+# 50/60/80/90 模板左侧带有价格共有的勾玉图标，70 模板已经只保留数字；
+# 图片兜底时仍统一只比较数字，避免公共图标影响价格分数。
 # 刷新按钮可用时箭头是亮红色，使用后整个按钮会明显变暗。
 # 两张实测样本的红色像素亮度中位数约为 184/111，取中间值留出余量。
 
@@ -66,6 +70,8 @@ PAGE_WAIT_SECONDS = 15.0
 DETECTION_WAIT_SECONDS = 3.0
 CONFIRM_WAIT_SECONDS = 12.0
 RETURN_WAIT_SECONDS = 20.0
+OCR_MIN_CONFIDENCE = 0.60
+OCR_SCALE = 3
 
 Rect = Tuple[int, int, int, int]
 
@@ -77,6 +83,7 @@ class MerchantResult(str, Enum):
     BLUE_TICKET_80 = "blue_ticket_80"
     BLUE_TICKET_90 = "blue_ticket_90"
     NO_BLUE_TICKET = "no_blue_ticket"
+    UNKNOWN_PRICE = "unknown_price"
     ERROR = "error"
 
 
@@ -85,6 +92,29 @@ class RefreshState(str, Enum):
     USED = "used"
     REFRESHED = "refreshed"
     ERROR = "error"
+
+
+_ocr_engine = None
+
+
+def _get_ocr_engine():
+    """按需加载本地 PaddleOCR 模型。"""
+    global _ocr_engine
+    if _ocr_engine is not None:
+        return _ocr_engine
+
+    os.environ.setdefault("PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK", "True")
+    from paddleocr import PaddleOCR
+
+    _ocr_engine = PaddleOCR(
+        det_model_dir=str(OCR_MODEL_DIR / "ch_PP-OCRv4_det_infer"),
+        rec_model_dir=str(OCR_MODEL_DIR / "ch_PP-OCRv4_rec_infer"),
+        cls_model_dir=str(OCR_MODEL_DIR / "ch_ppocr_mobile_v2.0_cls_infer"),
+        lang="ch",
+        show_log=False,
+        use_gpu=False,
+    )
+    return _ocr_engine
 
 
 
@@ -170,26 +200,48 @@ def _wait_for_refresh_state(
     deadline = time.monotonic() + timeout
     best_score: Optional[float] = None
     last_red_value: Optional[float] = None
-    while time.monotonic() < deadline:
+    last_state = RefreshState.ERROR
+    last_rect: Optional[Rect] = None
+    stable_frames = 0
+    frame_count = 0
+    while time.monotonic() < deadline and frame_count < REFRESH_STATE_MAX_FRAMES:
         frame = _take_frame()
+        frame_count += 1
         if frame is None:
+            last_state = RefreshState.ERROR
+            last_rect = None
+            stable_frames = 0
             continue
         state, rect, score, red_value = _match_refresh_state(frame)
         if score is not None and (best_score is None or score > best_score):
             best_score = score
         if red_value is not None:
             last_red_value = red_value
-        if state is not RefreshState.ERROR:
+        if state is RefreshState.ERROR:
+            last_state = RefreshState.ERROR
+            last_rect = None
+            stable_frames = 0
+            continue
+
+        if state is last_state:
+            stable_frames += 1
+        else:
+            last_state = state
+            stable_frames = 1
+        last_rect = rect
+        if stable_frames >= REFRESH_STATE_STABLE_FRAMES:
             state_text = "可刷新" if state is RefreshState.AVAILABLE else "今日已刷新"
             print(
-                f"识别到{label}：{state_text}，模板分数 {_score_text(score)}，"
-                f"红色亮度 {red_value:.1f}/{REFRESH_RED_VALUE_THRESHOLD:.1f}"
+                f"连续 {stable_frames} 帧识别到{label}：{state_text}，"
+                f"模板分数 {_score_text(score)}，"
+                f"红色亮度 {_score_text(red_value)}/{REFRESH_RED_VALUE_THRESHOLD:.1f}"
             )
-            return state, rect
+            return state, last_rect
 
     print(
-        f"[ERROR] 未识别到{label}，模板最高分 {_score_text(best_score)}，"
-        f"最近红色亮度 {_score_text(last_red_value)}"
+        f"[ERROR] {frame_count} 帧内未能连续 {REFRESH_STATE_STABLE_FRAMES} 帧确认{label}，"
+        f"模板最高分 {_score_text(best_score)}，最近红色亮度 "
+        f"{_score_text(last_red_value)}"
     )
     return RefreshState.ERROR, None
 
@@ -265,13 +317,55 @@ def _find_blue_ticket_rects(frame) -> list[Tuple[Rect, float]]:
 
 
 def _classify_blue_ticket_price(frame, ticket_rect: Rect) -> Tuple[Optional[str], dict[str, float]]:
-    """只在蓝票图标下方的小区域比较 50/60/70/80/90 五种价格。"""
+    """OCR 优先识别价格；OCR 无唯一结果时用最高分模板兜底。"""
     offset_left, offset_top, offset_right, offset_bottom = PRICE_SEARCH_OFFSET
     search_left = max(0, ticket_rect[0] + offset_left)
     search_top = max(0, ticket_rect[1] + offset_top)
     search_right = min(frame.shape[1], ticket_rect[0] + offset_right)
     search_bottom = min(frame.shape[0], ticket_rect[1] + offset_bottom)
     price_region = frame[search_top:search_bottom, search_left:search_right]
+
+    ocr_price = None
+    if price_region.size:
+        enlarged = cv2.resize(
+            price_region,
+            None,
+            fx=OCR_SCALE,
+            fy=OCR_SCALE,
+            interpolation=cv2.INTER_CUBIC,
+        )
+        try:
+            result = _get_ocr_engine().ocr(enlarged, cls=False)
+        except Exception as exc:
+            print(f"[WARN] 蓝票价格 OCR 失败，改用图片模板兜底：{exc}")
+            result = None
+
+        recognized_prices: set[str] = set()
+        if result and result[0]:
+            for line in result[0]:
+                try:
+                    text, confidence = line[1]
+                    if float(confidence) < OCR_MIN_CONFIDENCE:
+                        continue
+                    recognized_prices.update(
+                        re.findall(r"(?<!\d)(?:50|60|70|80|90)(?!\d)", str(text))
+                    )
+                except (TypeError, ValueError, IndexError):
+                    continue
+        if len(recognized_prices) == 1:
+            ocr_price = next(iter(recognized_prices))
+            print(f"蓝票价格 OCR 识别为 {ocr_price}，置信度阈值 {OCR_MIN_CONFIDENCE:.2f}")
+        elif len(recognized_prices) > 1:
+            print(f"[WARN] 蓝票价格 OCR 结果冲突：{sorted(recognized_prices)}，改用图片模板兜底")
+        else:
+            print("[INFO] 蓝票价格 OCR 未识别到支持的价格，改用图片模板兜底")
+
+    if ocr_price is not None:
+        return ocr_price, {}
+
+    if price_region.size == 0:
+        print("[WARN] 蓝票价格区域为空，无法进行图片模板兜底")
+        return None, {}
 
     scores: dict[str, float] = {}
     for price, path in PRICE_TEMPLATES.items():
@@ -292,18 +386,15 @@ def _classify_blue_ticket_price(frame, ticket_rect: Rect) -> Tuple[Optional[str]
 
     ordered = sorted(scores.items(), key=lambda item: item[1], reverse=True)
     best_price, best_score = ordered[0]
-    runner_up_score = ordered[1][1]
     score_text = "/".join(f"{price}={score:.3f}" for price, score in sorted(scores.items()))
     print(f"蓝票价格分类：{score_text}")
-    if (
-        best_score < PRICE_MATCH_THRESHOLD
-        or best_score - runner_up_score < PRICE_WIN_MARGIN
-    ):
+    if best_score < PRICE_MATCH_THRESHOLD:
         print(
             "[WARN] 蓝票价格分类置信度不足，"
-            f"最高分 {best_score:.3f}，领先 {best_score - runner_up_score:.3f}"
+            f"最高分 {best_score:.3f}，阈值 {PRICE_MATCH_THRESHOLD:.3f}"
         )
         return None, scores
+    print(f"蓝票图片模板兜底识别为 {best_price}，最高分 {best_score:.3f}")
     return best_price, scores
 
 
@@ -543,7 +634,7 @@ def _open_merchant_page() -> MerchantResult:
 def _detect_blue_ticket_price(
     timeout: float = DETECTION_WAIT_SECONDS,
 ) -> Tuple[bool, Optional[str]]:
-    """返回（是否看见蓝票，当前页面最低蓝票价格）。"""
+    """返回（是否看见蓝票，当前页面蓝票价格）。"""
     deadline = time.monotonic() + timeout
     saw_blue_ticket = False
     while time.monotonic() < deadline:
@@ -553,23 +644,32 @@ def _detect_blue_ticket_price(
         tickets = _find_blue_ticket_rects(frame)
         saw_blue_ticket = saw_blue_ticket or bool(tickets)
         detected_prices: list[str] = []
-        for ticket_rect, ticket_score in tickets:
-            price, _ = _classify_blue_ticket_price(frame, ticket_rect)
-            if price == "50":
-                print(
-                    "检测到最低价 50 蓝票，"
-                    f"蓝票图标匹配分数 {ticket_score:.3f}，停止继续刷新"
-                )
-                return True, "50"
+        for ticket_rect, _ticket_score in tickets:
+            try:
+                price, _ = _classify_blue_ticket_price(frame, ticket_rect)
+            except Exception as exc:
+                print(f"[WARN] 蓝票价格检测异常，当前商品价格记为未知：{exc}")
+                price = None
             if price is not None:
                 detected_prices.append(price)
         if detected_prices:
-            best_price = min(detected_prices, key=int)
-            print(f"检测到 {best_price} 蓝票，为防止蓝票被刷新，保留当前商店")
-            return True, best_price
+            unique_prices = set(detected_prices)
+            if len(unique_prices) != 1:
+                print(f"[WARN] 同一货架蓝票价格识别结果冲突：{sorted(unique_prices)}")
+                return True, None
+            price = next(iter(unique_prices))
+            if price == "50":
+                best_ticket_score = max(score for _, score in tickets)
+                print(
+                    "检测到最低价 50 蓝票，"
+                    f"蓝票图标匹配分数 {best_ticket_score:.3f}，停止继续刷新"
+                )
+                return True, "50"
+            print(f"检测到 {price} 蓝票，为防止蓝票被刷新，保留当前商店")
+            return True, price
 
     if saw_blue_ticket:
-        print("[ERROR] 看见蓝票图标，但价格分类置信度不足；为保护蓝票不会刷新")
+        print("[WARN] 看见蓝票图标但无法确认价格；为保护蓝票不会刷新")
         return True, None
     print("当前货架没有识别到蓝票")
     return False, None
@@ -644,10 +744,9 @@ def check_merchant() -> MerchantResult:
     if page_result is MerchantResult.ERROR:
         return page_result
 
-    # 2. 先检测现有商品；有蓝票但价格不明属于识别失败。
+    # 2. 先检测现有商品；有蓝票但价格不明时保留商店并继续任务。
     saw_blue_ticket, blue_ticket_price = _detect_blue_ticket_price()
-    if saw_blue_ticket and blue_ticket_price is None:  # 有蓝票，但价格分类失败
-        return MerchantResult.ERROR
+    unknown_price = saw_blue_ticket and blue_ticket_price is None
     # 3. 仅没有蓝票时尝试刷新；真正刷新成功后才重新识别。
     if not saw_blue_ticket:
         refresh_state = _refresh_merchant_shop()
@@ -655,12 +754,13 @@ def check_merchant() -> MerchantResult:
             return MerchantResult.ERROR
         if refresh_state is RefreshState.REFRESHED:
             saw_blue_ticket, blue_ticket_price = _detect_blue_ticket_price()
-            if saw_blue_ticket and blue_ticket_price is None:
-                return MerchantResult.ERROR
+            unknown_price = saw_blue_ticket and blue_ticket_price is None
 
     # 4. 返回庭院后输出价格结果，避免页面残留影响下一任务。
     if not _return_to_courtyard():
         return MerchantResult.ERROR
+    if unknown_price:
+        return MerchantResult.UNKNOWN_PRICE
     if blue_ticket_price == "50":
         return MerchantResult.BLUE_TICKET_50
     if blue_ticket_price == "60":

@@ -26,6 +26,15 @@ class ControllerServices:
 
 
 @dataclass(frozen=True)
+class TaskResult:
+    """一次调用的完成状态；已完成但需恢复时，必须先保存进度再恢复。"""
+
+    completed: bool
+    result: Optional[str] = None
+    recovery_reason: Optional[str] = None
+
+
+@dataclass(frozen=True)
 class TaskWork:
     task_name: str
     run_count: int

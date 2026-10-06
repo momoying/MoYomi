@@ -200,6 +200,39 @@ def _wait_for_hunting_status() -> Optional[str]:
     return name
 
 
+def _confirm_completed_hunting_status() -> bool:
+    """先确认狩猎战页面已加载，再在同一帧复核已挑战标志。"""
+    deadline = time.monotonic() + PAGE_WAIT_SECONDS
+    best_score: Optional[float] = None
+
+    while time.monotonic() < deadline:
+        frame = _take_frame()
+        if frame is None:
+            continue
+        score, rect = _match(frame, "hunt_back")
+        if score is not None and (best_score is None or score > best_score):
+            best_score = score
+        if rect is None:
+            continue
+
+        print(f"狩猎战正常界面已显示，退出按钮匹配分数 {score:.3f}")
+        challenged_score, challenged_rect = _match(frame, "already_challenged")
+        if challenged_rect is not None:
+            print(f"狩猎战状态：已挑战，匹配分数 {challenged_score:.3f}")
+            return True
+        print(
+            "[ERROR] 已回到狩猎战正常界面，但未识别到已挑战标志："
+            f"匹配分数 {'无' if challenged_score is None else f'{challenged_score:.3f}'}"
+        )
+        return False
+
+    print(
+        f"[ERROR] {PAGE_WAIT_SECONDS:.0f} 秒内未等到狩猎战正常界面（左上退出按钮）："
+        f"匹配分数 {'无' if best_score is None else f'{best_score:.3f}'}"
+    )
+    return False
+
+
 def _wait_for_battle_result() -> Optional[Tuple[str, Rect]]:
     deadline = time.monotonic() + BATTLE_WAIT_SECONDS
     last_frame = None
@@ -305,8 +338,7 @@ def _challenge_and_confirm_completion() -> bool:
     result_name, result_rect = battle_result
     if not _close_battle_result(result_name, result_rect):
         return False
-    if _wait_for_hunting_status() != "already_challenged":
-        print("[ERROR] 战斗结算后未确认已挑战状态")
+    if not _confirm_completed_hunting_status():
         return False
     return True
 

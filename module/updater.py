@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -27,7 +28,11 @@ UPDATE_STATE_PATH = PROJECT_ROOT / "config" / "update_state.json"
 REQUEST_TIMEOUT_SECONDS = 8
 MAX_ARCHIVE_BYTES = 500 * 1024 * 1024
 _VERSION_PATTERN = re.compile(r"^v?(\d+)\.(\d+)\.(\d+)$")
-_ALLOWED_DOWNLOAD_HOSTS = {"github.com", "codeload.github.com"}
+_ALLOWED_DOWNLOAD_HOSTS = {
+    "github.com",
+    "codeload.github.com",
+    "release-assets.githubusercontent.com",
+}
 _PROTECTED_ROOTS = {
     ".git",
     ".venv",
@@ -38,6 +43,7 @@ _PROTECTED_ROOTS = {
 }
 _PROTECTED_FILES = {".env"}
 _REQUIRED_FILES = {"ui.py", "requirements.txt", "module/updater.py"}
+_PATCH_METADATA_PATH = ".moyomi-update.json"
 
 
 class UpdateError(RuntimeError):
@@ -52,12 +58,15 @@ class ReleaseInfo:
     notes: str
     page_url: str
     zip_url: str
+    ota_url: str
 
 
 @dataclass(frozen=True)
 class PreparedUpdate:
     archive_path: Path
     temporary_dir: Path
+    incremental: bool
+    changed_files: int
 
 
 def parse_version(value: str) -> Optional[tuple[int, int, int]]:
@@ -118,6 +127,12 @@ def check_for_update(
         f"https://github.com/{GITHUB_REPOSITORY}/archive/refs/tags/"
         f"{quoted_tag}.zip"
     )
+    current_tag = f"v{current_version.lstrip('v')}"
+    ota_name = f"MoYomi-OTA-{current_tag}_{tag_name}.zip"
+    ota_url = (
+        f"https://github.com/{GITHUB_REPOSITORY}/releases/download/"
+        f"{quoted_tag}/{urllib.parse.quote(ota_name, safe='')}"
+    )
     return ReleaseInfo(
         version=".".join(str(part) for part in parsed),
         tag_name=tag_name,
@@ -125,6 +140,7 @@ def check_for_update(
         notes="请点击“打开发布页”查看完整更新说明。",
         page_url=page_url,
         zip_url=zip_url,
+        ota_url=ota_url,
     )
 
 
@@ -132,6 +148,69 @@ def _validate_download_url(url: str) -> None:
     parsed = urllib.parse.urlparse(url)
     if parsed.scheme != "https" or parsed.hostname not in _ALLOWED_DOWNLOAD_HOSTS:
         raise UpdateError("Release 下载地址不是受信任的 GitHub HTTPS 地址")
+
+
+def _read_limited(response: Any, limit: int, label: str) -> bytes:
+    length = response.headers.get("Content-Length") if hasattr(response, "headers") else None
+    if length and int(length) > limit:
+        raise UpdateError(f"{label}超过大小限制")
+    chunks = bytearray()
+    while True:
+        chunk = response.read(min(1024 * 1024, limit + 1 - len(chunks)))
+        if not chunk:
+            break
+        chunks.extend(chunk)
+        if len(chunks) > limit:
+            raise UpdateError(f"{label}超过大小限制")
+    return bytes(chunks)
+
+
+def _read_patch_metadata(archive: zipfile.ZipFile) -> Optional[dict[str, Any]]:
+    files = [member for member in archive.infolist() if not member.is_dir()]
+    if not files:
+        return None
+    first_parts = {PurePosixPath(member.filename).parts[0] for member in files}
+    if len(first_parts) != 1:
+        return None
+    wrapper = next(iter(first_parts))
+    metadata_name = f"{wrapper}/{_PATCH_METADATA_PATH}"
+    if metadata_name not in archive.namelist():
+        return None
+    try:
+        metadata = json.loads(archive.read(metadata_name).decode("utf-8"))
+    except (KeyError, UnicodeDecodeError, ValueError) as exc:
+        raise UpdateError("增量更新清单无效") from exc
+    if not isinstance(metadata, dict) or metadata.get("kind") != "incremental":
+        raise UpdateError("增量更新清单格式无效")
+    deleted = metadata.get("deleted")
+    files = metadata.get("files")
+    if not isinstance(deleted, list) or not all(isinstance(path, str) for path in deleted):
+        raise UpdateError("增量更新删除清单无效")
+    if not isinstance(files, dict) or not all(
+        isinstance(path, str)
+        and isinstance(digest, str)
+        and re.fullmatch(r"[0-9a-f]{64}", digest)
+        for path, digest in files.items()
+    ):
+        raise UpdateError("增量更新文件清单无效")
+    if set(deleted) & set(files):
+        raise UpdateError("增量更新清单同时包含新增和删除文件")
+    for key in ("from_version", "to_version"):
+        if not isinstance(metadata.get(key), str) or parse_version(metadata[key]) is None:
+            raise UpdateError("增量更新版本信息无效")
+    for path in [*deleted, *files]:
+        _validate_update_path(path)
+    return metadata
+
+
+def _validate_update_path(relative: str) -> None:
+    if "\\" in relative or ":" in relative:
+        raise UpdateError("更新包包含不安全路径")
+    path = PurePosixPath(relative)
+    if not path.parts or path.is_absolute() or ".." in path.parts:
+        raise UpdateError("更新包包含不安全路径")
+    if path.parts[0] in _PROTECTED_ROOTS or relative in _PROTECTED_FILES:
+        raise UpdateError("更新清单包含受保护路径")
 
 
 def _archive_members(archive: zipfile.ZipFile) -> dict[str, zipfile.ZipInfo]:
@@ -147,25 +226,36 @@ def _archive_members(archive: zipfile.ZipFile) -> dict[str, zipfile.ZipInfo]:
     wrapper = next(iter(first_parts))
     managed: dict[str, zipfile.ZipInfo] = {}
     for member in files:
-        if "\\" in member.filename or ":" in member.filename:
-            raise UpdateError("更新压缩包包含不安全路径")
         source_path = PurePosixPath(member.filename)
         parts = source_path.parts
         if not parts or parts[0] != wrapper or len(parts) < 2:
             raise UpdateError("更新压缩包目录结构无效")
         relative = PurePosixPath(*parts[1:])
+        relative_name = relative.as_posix()
+        if "\\" in member.filename or ":" in member.filename:
+            raise UpdateError("更新压缩包包含不安全路径")
         if relative.is_absolute() or ".." in relative.parts:
             raise UpdateError("更新压缩包包含不安全路径")
         if member.external_attr >> 16 & 0o170000 == 0o120000:
             raise UpdateError("更新压缩包不能包含符号链接")
         if relative.parts[0] in _PROTECTED_ROOTS or relative.as_posix() in _PROTECTED_FILES:
             continue
-        if relative.as_posix() in managed:
+        if relative_name == _PATCH_METADATA_PATH:
+            continue
+        if relative_name in managed:
             raise UpdateError("更新压缩包包含重复路径")
-        managed[relative.as_posix()] = member
+        managed[relative_name] = member
 
-    if not _REQUIRED_FILES.issubset(managed):
+    metadata = _read_patch_metadata(archive)
+    if metadata is None and not _REQUIRED_FILES.issubset(managed):
         raise UpdateError("更新压缩包缺少必要程序文件")
+    if metadata is not None:
+        if set(metadata["files"]) != set(managed):
+            raise UpdateError("增量更新文件与清单不一致")
+        for relative, member in managed.items():
+            digest = hashlib.sha256(archive.read(member)).hexdigest()
+            if digest != metadata["files"][relative]:
+                raise UpdateError(f"增量更新文件校验失败：{relative}")
     return managed
 
 
@@ -186,28 +276,45 @@ def download_release(
     *,
     opener: Callable[..., Any] = urllib.request.urlopen,
 ) -> PreparedUpdate:
-    _validate_download_url(release.zip_url)
     temporary_dir = Path(tempfile.mkdtemp(prefix="moyomi-update-"))
     archive_path = temporary_dir / f"MoYomi-{release.version}.zip"
     try:
+        try:
+            _validate_download_url(release.ota_url)
+            with opener(_request(release.ota_url), timeout=REQUEST_TIMEOUT_SECONDS) as response:
+                final_url = response.geturl() if hasattr(response, "geturl") else release.ota_url
+                _validate_download_url(final_url)
+                archive_bytes = _read_limited(response, MAX_ARCHIVE_BYTES, "增量更新包")
+            archive_path.write_bytes(archive_bytes)
+            changed_files = validate_archive(archive_path)
+            with zipfile.ZipFile(archive_path) as archive:
+                metadata = _read_patch_metadata(archive)
+            if metadata is None:
+                raise UpdateError("发布的增量更新包缺少清单")
+            if metadata["from_version"] != APP_VERSION or metadata["to_version"] != release.version:
+                raise UpdateError("增量更新包版本不匹配")
+            return PreparedUpdate(
+                archive_path=archive_path,
+                temporary_dir=temporary_dir,
+                incremental=True,
+                changed_files=len(changed_files),
+            )
+        except Exception:
+            archive_path.unlink(missing_ok=True)
+
+        _validate_download_url(release.zip_url)
         with opener(_request(release.zip_url), timeout=REQUEST_TIMEOUT_SECONDS) as response:
             final_url = response.geturl() if hasattr(response, "geturl") else release.zip_url
             _validate_download_url(final_url)
-            length = response.headers.get("Content-Length") if hasattr(response, "headers") else None
-            if length and int(length) > MAX_ARCHIVE_BYTES:
-                raise UpdateError("更新压缩包超过 500 MB，已取消下载")
-            downloaded = 0
-            with archive_path.open("wb") as output:
-                while True:
-                    chunk = response.read(1024 * 1024)
-                    if not chunk:
-                        break
-                    downloaded += len(chunk)
-                    if downloaded > MAX_ARCHIVE_BYTES:
-                        raise UpdateError("更新压缩包超过 500 MB，已取消下载")
-                    output.write(chunk)
-        validate_archive(archive_path)
-        return PreparedUpdate(archive_path=archive_path, temporary_dir=temporary_dir)
+            archive_bytes = _read_limited(response, MAX_ARCHIVE_BYTES, "更新压缩包")
+        archive_path.write_bytes(archive_bytes)
+        changed_files = len(validate_archive(archive_path))
+        return PreparedUpdate(
+            archive_path=archive_path,
+            temporary_dir=temporary_dir,
+            incremental=False,
+            changed_files=changed_files,
+        )
     except Exception:
         shutil.rmtree(temporary_dir, ignore_errors=True)
         raise
@@ -305,15 +412,21 @@ def apply_update(
 
     try:
         with zipfile.ZipFile(archive_path) as archive:
+            metadata = _read_patch_metadata(archive)
             members = _archive_members(archive)
-            new_managed = set(members)
+            deleted_files = set(metadata["deleted"]) if metadata is not None else set()
+            if metadata is None:
+                new_managed = set(members)
+                touched = new_managed | (old_managed - new_managed)
+            else:
+                new_managed = (old_managed | set(members)) - deleted_files
+                touched = set(members) | deleted_files
             for relative, member in members.items():
                 destination = _safe_destination(stage, relative)
                 destination.parent.mkdir(parents=True, exist_ok=True)
                 with archive.open(member) as source, destination.open("wb") as output:
                     shutil.copyfileobj(source, output)
 
-        touched = new_managed | (old_managed - new_managed)
         existed: set[str] = set()
         for relative in touched:
             destination = _safe_destination(root, relative)
@@ -328,14 +441,20 @@ def apply_update(
             if (root / "requirements.txt").is_file()
             else b""
         )
-        new_requirements = (stage / "requirements.txt").read_bytes()
+        staged_requirements = stage / "requirements.txt"
+        new_requirements = (
+            staged_requirements.read_bytes()
+            if staged_requirements.is_file()
+            else old_requirements
+        )
 
         try:
-            for relative in old_managed - new_managed:
+            files_to_delete = deleted_files if metadata is not None else old_managed - new_managed
+            for relative in files_to_delete:
                 destination = _safe_destination(root, relative)
                 if destination.is_file():
                     destination.unlink()
-            for relative in new_managed:
+            for relative in members:
                 source = stage / Path(relative)
                 destination = _safe_destination(root, relative)
                 destination.parent.mkdir(parents=True, exist_ok=True)

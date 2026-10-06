@@ -44,6 +44,7 @@ class AccountCardView:
         system_state: dict[str, Any],
         now: datetime,
         task_mode: str = controller.DAILY_MODE,
+        single_task_name: Optional[str] = None,
     ) -> None:
         self.account = account
         self.system = system
@@ -53,9 +54,13 @@ class AccountCardView:
         self.task_views: dict[str, TaskStatusView] = {}
 
         task_order = (
-            WEEKLY_UI_TASK_ORDER
-            if task_mode == controller.WEEKLY_MODE
-            else UI_TASK_ORDER
+            (single_task_name,)
+            if single_task_name is not None
+            else (
+                WEEKLY_UI_TASK_ORDER
+                if task_mode == controller.WEEKLY_MODE
+                else UI_TASK_ORDER
+            )
         )
         for task_name in task_order:
             if task_mode == controller.WEEKLY_MODE:
@@ -164,7 +169,11 @@ class AccountCardView:
             run_spacing=8,
         )
         for control in self.task_grid.controls:
-            control.col = 12 if task_mode == controller.WEEKLY_MODE else 6
+            control.col = (
+                12
+                if task_mode == controller.WEEKLY_MODE or single_task_name is not None
+                else 6
+            )
 
         self.control = ft.Container(
             col={"xs": 12, "sm": 6, "md": 4},
@@ -219,8 +228,8 @@ class AccountCardView:
         """保持关键任务展示状态与任务开放时间同步。"""
         if self.task_mode != controller.DAILY_MODE:
             return
-        merchant = self.task_views[controller.MERCHANT_TASK]
-        if merchant.status == "unavailable":
+        merchant = self.task_views.get(controller.MERCHANT_TASK)
+        if merchant is not None and merchant.status == "unavailable":
             merchant.control.visible = False
 
     def important_result_labels(self) -> list[str]:
@@ -229,7 +238,9 @@ class AccountCardView:
             return []
         labels: list[str] = []
         for task_name in (controller.BOUNTY_TASK, controller.MERCHANT_TASK):
-            view = self.task_views[task_name]
+            view = self.task_views.get(task_name)
+            if view is None:
+                continue
             if not view.control.visible or view.status != "done" or not view.highlighted:
                 continue
             labels.append(str(view.detail.value))

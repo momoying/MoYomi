@@ -40,6 +40,21 @@ def parse_one_shot_run_at(
 
 class DailyPageMixin:
     def _build_daily_page(self) -> ft.Control:
+        self.single_task_selector_panel = ft.Column(
+            [
+                ft.Text(
+                    "选择任务",
+                    size=12,
+                    color=COLORS["muted"],
+                    text_align=ft.TextAlign.CENTER,
+                ),
+                self.single_task_selector,
+            ],
+            spacing=1,
+            tight=True,
+            horizontal_alignment=ft.CrossAxisAlignment.CENTER,
+            visible=self.single_task_mode,
+        )
         task_filter = ft.Row(
             [
                 ft.Column(
@@ -71,8 +86,23 @@ class DailyPageMixin:
                     tight=True,
                     horizontal_alignment=ft.CrossAxisAlignment.CENTER,
                 ),
+                ft.Column(
+                    [
+                        ft.Text(
+                            "单任务模式",
+                            size=12,
+                            color=COLORS["muted"],
+                            text_align=ft.TextAlign.CENTER,
+                        ),
+                        self.single_task_mode_switch,
+                    ],
+                    spacing=1,
+                    tight=True,
+                    horizontal_alignment=ft.CrossAxisAlignment.CENTER,
+                ),
+                self.single_task_selector_panel,
             ],
-            spacing=8,
+            spacing=10,
             tight=True,
             vertical_alignment=ft.CrossAxisAlignment.CENTER,
         )
@@ -119,7 +149,8 @@ class DailyPageMixin:
                     self.schedule_button,
                     self.start_button,
                 ],
-                spacing=10,
+                spacing=8,
+                tight=True,
             ),
         )
         log_panel = self._panel(
@@ -166,6 +197,8 @@ class DailyPageMixin:
         now = datetime.now().astimezone()
         self.cards.clear()
         self.cards_grid.controls.clear()
+        if self.single_task_mode and self.single_task_name is None:
+            active_accounts = {}
         for account, account_state in active_accounts.items():
             for system in account_state["systems"]:
                 system_state = state["accounts"][account]["systems"][system]
@@ -175,9 +208,23 @@ class DailyPageMixin:
                     system_state,
                     now,
                     task_mode=self.task_mode,
+                    single_task_name=(
+                        self.single_task_name if self.single_task_mode else None
+                    ),
                 )
                 self.cards[(account, system)] = card
                 self.cards_grid.controls.append(card.control)
+        if self.single_task_mode and self.single_task_name is None:
+            self.cards_grid.controls.append(
+                ft.Container(
+                    padding=20,
+                    content=ft.Text(
+                        "请先选择一个任务",
+                        size=13,
+                        color=COLORS["muted"],
+                    ),
+                )
+            )
         self._apply_task_visibility()
         self._refresh_task_summary()
         if update:
@@ -194,12 +241,16 @@ class DailyPageMixin:
             )
             for card in self.cards.values()
         )
-        self.summary_text.value = (
-            f"{len(self.cards)} 个角色 · {due_systems} 个待执行"
-        )
+        if self.single_task_mode and self.single_task_name is None:
+            self.summary_text.value = "请选择任务"
+        else:
+            self.summary_text.value = (
+                f"{len(self.cards)} 个角色 · {due_systems} 个待执行"
+            )
         if hasattr(self, "important_results_bar"):
             self.important_results_bar.visible = (
                 self.task_mode == controller.DAILY_MODE
+                and not self.single_task_mode
             )
         important_results = Counter(
             label
@@ -253,8 +304,8 @@ class DailyPageMixin:
     def _apply_task_visibility(self) -> None:
         hide_unavailable = bool(self.hide_unavailable_tasks.value)
         for card in self.cards.values():
-            card.control.visible = not self.show_important_only or bool(
-                card.important_result_labels()
+            card.control.visible = self.single_task_mode or (
+                not self.show_important_only or bool(card.important_result_labels())
             )
             for task_name, task_view in card.task_views.items():
                 merchant_closed = (
@@ -284,11 +335,77 @@ class DailyPageMixin:
             return
         selected = list(self.task_mode_selector.selected)
         self.task_mode = selected[0] if selected else controller.DAILY_MODE
+        self.single_task_name = None
+        self._refresh_single_task_options()
+        self.start_button.disabled = self.single_task_mode
         if self.task_mode == controller.WEEKLY_MODE:
             self.show_important_only = False
         self.refresh_cards(update=False)
         label = "周常" if self.task_mode == controller.WEEKLY_MODE else "日常"
         self.append_log("INFO", f"已切换到{label}任务")
+        self._safe_update()
+
+
+    def _refresh_single_task_options(self) -> None:
+        task_names = (
+            WEEKLY_UI_TASK_ORDER
+            if self.task_mode == controller.WEEKLY_MODE
+            else UI_TASK_ORDER
+        )
+        self.single_task_selector.options = [
+            ft.DropdownOption(
+                key=task_name,
+                text=controller.TASK_LABELS[task_name],
+            )
+            for task_name in task_names
+        ]
+        self.single_task_selector.value = self.single_task_name
+
+
+    def _set_single_task_mode(
+        self,
+        enabled: bool,
+        *,
+        update: bool = True,
+        log: bool = True,
+        refresh_cards: bool = True,
+    ) -> None:
+        if self.running:
+            return
+        self.single_task_mode = enabled
+        self.single_task_name = None
+        self.single_task_mode_switch.value = enabled
+        self.single_task_selector_panel.visible = enabled
+        self._refresh_single_task_options()
+        self.start_button.disabled = enabled
+        if refresh_cards:
+            self.refresh_cards(update=False)
+        if log:
+            self.append_log(
+                "INFO",
+                "已切换到单任务模式" if enabled else "已退出单任务模式",
+            )
+        if update:
+            self._safe_update()
+
+
+    def _on_single_task_mode_changed(self, event: Any = None) -> None:
+        enabled = bool(
+            getattr(getattr(event, "control", None), "value", False)
+        )
+        self._set_single_task_mode(enabled)
+
+
+    def _on_single_task_selected(self, event: Any = None) -> None:
+        if self.running:
+            return
+        self.single_task_name = getattr(
+            getattr(event, "control", None),
+            "value",
+            self.single_task_selector.value,
+        )
+        self.start_button.disabled = self.single_task_mode and not self.single_task_name
+        self.refresh_cards(update=False)
         self._safe_update()
 
 
@@ -359,14 +476,12 @@ class DailyPageMixin:
 
     def _refresh_schedule_summary(self) -> None:
         if self._scheduled_run_at is not None:
-            self.schedule_button.content = f"闹钟 {self._scheduled_run_at:%m-%d %H:%M}"
             self.schedule_button.bgcolor = COLORS["active_bg"]
-            self.schedule_button.color = COLORS["active"]
+            self.schedule_button.icon_color = COLORS["active"]
             self.schedule_button.tooltip = self._schedule_alarm_text()
         else:
-            self.schedule_button.content = "设置定时"
             self.schedule_button.bgcolor = None
-            self.schedule_button.color = None
+            self.schedule_button.icon_color = COLORS["muted"]
             self.schedule_button.tooltip = "设置仅在本次应用运行期间有效的单次闹钟"
 
 
@@ -402,12 +517,18 @@ class DailyPageMixin:
                     await asyncio.sleep(5)
                     continue
 
+                self._set_single_task_mode(
+                    False,
+                    update=False,
+                    log=False,
+                    refresh_cards=False,
+                )
                 self.task_mode = schedule_mode
                 self.task_mode_selector.selected = [schedule_mode]
                 self.refresh_cards(update=False)
                 mode_label = "周常" if schedule_mode == controller.WEEKLY_MODE else "日常"
                 self.append_log("INFO", f"单次闹钟已触发：{mode_label}")
-                self.start_run()
+                self.start_run(single_task=False)
             except asyncio.CancelledError:
                 return
             except Exception as exc:
@@ -416,8 +537,23 @@ class DailyPageMixin:
             await asyncio.sleep(5)
 
 
-    def start_run(self, _event: Any = None) -> None:
+    def start_run(
+        self,
+        _event: Any = None,
+        *,
+        single_task: Optional[bool] = None,
+    ) -> None:
         if self.running:
+            return
+        if single_task is False and self.single_task_mode:
+            self._set_single_task_mode(False, update=False, log=False)
+        selected_task = (
+            self.single_task_name
+            if single_task is not False and self.single_task_mode
+            else None
+        )
+        if self.single_task_mode and selected_task is None:
+            self.append_log("WARN", "请先选择一个任务")
             return
         if self.tool_running:
             self.append_log("ERROR", "小工具正在运行，不能同时启动一键长草")
@@ -436,14 +572,24 @@ class DailyPageMixin:
         self.start_button.color = COLORS["error"]
         self.refresh_button.disabled = True
         self.task_mode_selector.disabled = True
+        self.single_task_selector.disabled = True
+        self.single_task_mode_switch.disabled = True
         self.schedule_button.disabled = True
         self._set_global_settings_disabled(True)
         self.tool_start_button.disabled = True
         self.running_badge.visible = True
+        self._run_single_task_name = selected_task
         mode_label = "周常" if self.task_mode == controller.WEEKLY_MODE else "日常"
-        self.running_badge_text.value = f"{mode_label}任务运行中"
+        run_label = (
+            controller.TASK_LABELS[selected_task]
+            if selected_task
+            else mode_label
+        )
+        self.running_badge_text.value = (
+            f"单任务运行中 · {run_label}" if selected_task else f"{run_label}任务运行中"
+        )
         self.settings_message.value = ""
-        self.append_log("INFO", f"开始生成{mode_label}待执行队列")
+        self.append_log("INFO", f"开始生成{run_label}待执行队列")
         self._safe_update()
         self.page.run_thread(self._controller_worker)
 
@@ -477,6 +623,7 @@ class DailyPageMixin:
                     stop_event=self.stop_event,
                     runtime_settings=self.settings,
                     task_mode=self.task_mode,
+                    single_task_name=self._run_single_task_name,
                 )
         except Exception as exc:
             self.append_log("ERROR", f"中控未捕获异常：{exc}")
@@ -509,6 +656,13 @@ class DailyPageMixin:
         self.refresh_button.disabled = False
         if hasattr(self, "task_mode_selector"):
             self.task_mode_selector.disabled = False
+        if hasattr(self, "single_task_selector"):
+            self.single_task_selector.disabled = False
+        if hasattr(self, "single_task_mode_switch"):
+            self.single_task_mode_switch.disabled = False
+        self.start_button.disabled = getattr(self, "single_task_mode", False) and not getattr(
+            self, "single_task_name", None
+        )
         if hasattr(self, "schedule_button"):
             self.schedule_button.disabled = False
         self._set_global_settings_disabled(False)

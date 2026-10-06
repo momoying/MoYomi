@@ -53,6 +53,9 @@ class AssistantDashboard(
         self.tool_running = False
         self.active_section = "daily"
         self.task_mode = controller.DAILY_MODE
+        self.single_task_mode = False
+        self.single_task_name: Optional[str] = None
+        self._run_single_task_name: Optional[str] = None
         self.show_important_only = False
         self._scheduled_run_at: Optional[datetime] = None
         self._scheduled_run_mode = controller.DAILY_MODE
@@ -110,12 +113,16 @@ class AssistantDashboard(
         self.refresh_button = ft.IconButton(
             icon=ft.Icons.REFRESH_ROUNDED,
             icon_color=COLORS["muted"],
+            width=40,
+            height=40,
             tooltip="重新读取账号状态",
             on_click=self.refresh_status,
         )
-        self.schedule_button = ft.Button(
-            content="设置定时",
+        self.schedule_button = ft.IconButton(
             icon=ft.Icons.SCHEDULE_ROUNDED,
+            icon_color=COLORS["muted"],
+            width=40,
+            height=40,
             tooltip="设置仅在本次应用运行期间有效的单次定时",
             on_click=self.open_schedule_dialog,
         )
@@ -145,6 +152,21 @@ class AssistantDashboard(
             selected=[controller.DAILY_MODE],
             show_selected_icon=False,
             on_change=self._on_task_mode_changed,
+        )
+        self.single_task_selector = ft.Dropdown(
+            hint_text="请选择",
+            options=[],
+            dense=True,
+            width=135,
+            menu_width=140,
+            on_select=self._on_single_task_selected,
+        )
+        self.single_task_mode_switch = ft.Switch(
+            value=False,
+            active_color=COLORS["active"],
+            width=58,
+            height=32,
+            on_change=self._on_single_task_mode_changed,
         )
 
         default_alarm = datetime.now().astimezone() + timedelta(minutes=1)
@@ -575,6 +597,26 @@ class AssistantDashboard(
                 self.secret_attempts_field,
                 ft.Text(
                     "获得黑蛋或手动停止后保留剩余次数，可继续修改后再次使用。",
+                    size=11,
+                    color=COLORS["muted"],
+                ),
+            ],
+            spacing=5,
+            visible=False,
+        )
+        self.market_refresh_count_field = ft.TextField(
+            label="最大刷新次数",
+            value=str(self.settings.get("market_sniper_refresh_count", 0)),
+            hint_text="发现商品后会提前停止",
+            keyboard_type=ft.KeyboardType.NUMBER,
+            border_radius=10,
+            dense=True,
+        )
+        self.market_refresh_count_control = ft.Column(
+            [
+                self.market_refresh_count_field,
+                ft.Text(
+                    "先检查一次当前列表；仍无商品时最多刷新指定次数。",
                     size=11,
                     color=COLORS["muted"],
                 ),

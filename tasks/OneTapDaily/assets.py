@@ -31,6 +31,14 @@ class OneTapDailyAssets(TaskAssets):
         name='task_list',
     )
 
+    # 庭院事务页面标题，用于等待页面加载完成后再判断页签。
+    I_TASK_HEADER = ImageAsset(
+        file=RES_DIR / "task_header.png",
+        region=((200, 0), (560, 140)),
+        threshold=0.8,
+        name='task_header',
+    )
+
     # 一键完成按钮
     I_ONE_TAP = ImageAsset(
         file=RES_DIR / "finish.png",

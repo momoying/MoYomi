@@ -9,7 +9,7 @@ from typing import Any, Callable, Optional
 
 from controller.constants import *
 from controller.state_store import heart_team_role
-from controller.types import ControllerServices
+from controller.types import ControllerServices, TaskResult
 from module.diagnostics import capture_error_screenshot, configure_error_screenshots
 
 
@@ -182,9 +182,8 @@ def _invoke_task_runner(
     recovery_retry: bool = False,
     completed_battles: int = 0,
     on_battle_completed: Optional[Callable[[int, int], None]] = None,
-) -> tuple[bool, Optional[str]]:
+) -> TaskResult:
     """执行一次任务调用，并统一解释不同任务的返回值。"""
-    task_result: Optional[str] = None
     if task_name == COOP_REWARD_TASK:
         raw_result = runner(
             # 普通恢复会回到庭院；无论当前是第几场，恢复后的重试都
@@ -194,18 +193,21 @@ def _invoke_task_runner(
         )
         raw_value = getattr(raw_result, "value", raw_result)
         if raw_value == COOP_BATTLE_COMPLETED_RECOVERY_REQUIRED:
-            task_result = COOP_BATTLE_COMPLETED_RECOVERY_REQUIRED
-            success = True
-        else:
-            success = raw_result is True
-    elif task_name == BOUNTY_TASK:
+            return TaskResult(
+                completed=True,
+                result=raw_value,
+                recovery_reason="协战奖励场数已经完成，但奖励领取或退场流程失败",
+            )
+        return TaskResult(completed=raw_result is True)
+    elif task_name in {BOUNTY_TASK, MERCHANT_TASK, CONSIGNMENT_HOUSE_TASK}:
         raw_result = runner()
         task_result = getattr(raw_result, "value", str(raw_result))
-        success = task_result in BOUNTY_RESULT_DETAILS
-    elif task_name == MERCHANT_TASK:
-        raw_result = runner()
-        task_result = getattr(raw_result, "value", str(raw_result))
-        success = task_result in MERCHANT_RESULT_DETAILS
+        valid_results = {
+            BOUNTY_TASK: BOUNTY_RESULT_DETAILS,
+            MERCHANT_TASK: MERCHANT_RESULT_DETAILS,
+            CONSIGNMENT_HOUSE_TASK: {CONSIGNMENT_ALREADY_PURCHASED, CONSIGNMENT_PURCHASED},
+        }[task_name]
+        return TaskResult(completed=task_result in valid_results, result=task_result)
     elif task_name == HEART_TEAM_TASK:
         raw_result = runner(
             role=heart_team_role(system_state),
@@ -215,16 +217,16 @@ def _invoke_task_runner(
         raw_value = getattr(raw_result, "value", raw_result)
         if raw_value == HEART_TEAM_BATTLES_COMPLETED_CLEANUP_FAILED:
             # 战斗目标已经完成，不能走普通失败重试，否则会重复打 20/30 场。
-            task_result = HEART_TEAM_BATTLES_COMPLETED_CLEANUP_FAILED
-            success = True
-        else:
-            success = raw_result is True
+            return TaskResult(
+                completed=True,
+                result=raw_value,
+                recovery_reason="同心队战斗场数已经完成，但退出组队流程失败",
+            )
+        return TaskResult(completed=raw_result is True)
     elif task_name == "liked" and region == CROSS_REGION:
-        success = bool(runner(cross_region_only=True))
+        return TaskResult(completed=bool(runner(cross_region_only=True)))
     else:
-        raw_result = runner()
-        success = bool(raw_result)
-    return success, task_result
+        return TaskResult(completed=bool(runner()))
 
 
 def _run_task_recovery(

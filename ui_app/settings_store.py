@@ -84,6 +84,10 @@ def load_ui_settings(path: Path = SETTINGS_PATH) -> dict[str, Any]:
             0,
             int(settings.get("secret_battle_attempts", 0)),
         )
+        settings["market_sniper_refresh_count"] = max(
+            0,
+            int(settings.get("market_sniper_refresh_count", 0)),
+        )
         settings["battle_detection_interval"] = min(
             10.0,
             max(0.1, float(settings["battle_detection_interval"])),

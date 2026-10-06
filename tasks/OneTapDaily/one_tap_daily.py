@@ -156,6 +156,63 @@ def _wait_for_one_tap(
     return None, best_score
 
 
+def _wait_for_task_header(timeout: float) -> bool:
+    """确认任务页标题出现，避免把页面加载动画当成特殊页。"""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        frame = _take_frame()
+        if frame is None:
+            continue
+        score, rect = _match(frame, "task_header")
+        if rect is not None:
+            print(f"识别到庭院事务标题，匹配分数 {score:.3f}")
+            return True
+    print(f"[ERROR] {timeout:.0f} 秒内未识别到庭院事务标题")
+    return False
+
+
+def _find_initial_one_tap(
+    timeout: float,
+) -> Tuple[Optional[Rect], Optional[float]]:
+    """查找两帧；只有连续两帧缺少标志才切换日常页签。"""
+    best_score: Optional[float] = None
+    missing_frames = 0
+    deadline = time.monotonic() + timeout
+    while missing_frames < 2 and time.monotonic() < deadline:
+        frame = _take_frame()
+        if frame is None:
+            continue
+        score, rect = _match(frame, "one_tap")
+        if score is not None and (best_score is None or score > best_score):
+            best_score = score
+        if rect is not None:
+            return rect, score
+        missing_frames += 1
+        if missing_frames < 2:
+            time.sleep(SCREENSHOT_INTERVAL)
+    return None, best_score
+
+
+def _ensure_daily_one_tap(deadline: float) -> Optional[Rect]:
+    """当前页无一键标志时切换日常，并确认按钮出现后才返回。"""
+    one_tap_rect, best_score = _find_initial_one_tap(
+        min(ONE_TAP_WAIT_SECONDS, max(0.1, deadline - time.monotonic()))
+    )
+    if one_tap_rect is not None:
+        return one_tap_rect
+
+    score_text = "无" if best_score is None else f"{best_score:.3f}"
+    print(f"连续两帧未识别到一键完成（最高分 {score_text}），尝试切换到日常页签")
+    _click_rect(DAILY_TAB_CLICK_REGION, "日常标签")
+    time.sleep(POST_ACTION_DELAY_SECONDS)
+    retry_wait = min(ONE_TAP_WAIT_SECONDS, max(0.1, deadline - time.monotonic()))
+    one_tap_rect, retry_score = _wait_for_one_tap(retry_wait)
+    if one_tap_rect is None:
+        score_text = "无" if retry_score is None else f"{retry_score:.3f}"
+        print(f"[ERROR] 点击“日常”标签后仍未识别到一键完成，最高分 {score_text}")
+    return one_tap_rect
+
+
 def _back_color_metrics(frame, rect: Rect) -> Tuple[float, float, float, float]:
     """返回当前按钮和正常模板的平均 HSV 饱和度、亮度。"""
     left, top, right, bottom = rect
@@ -218,41 +275,11 @@ def _close_reward_success(rect: Rect, timeout: float) -> bool:
 
 def _complete_one_tap_and_exit() -> bool:
     """按领取判断、领奖处理、安全退出三个阶段完成一键日常。"""
-    # 1. 定位一键完成；必要时切换日常标签，重试仍消耗同一个总超时。
+    # 1. 页面标题确认后快速判断页签，避免为特殊页等待一键标志超时。
     deadline = time.monotonic() + POST_ONE_TAP_TIMEOUT_SECONDS
-    initial_wait = min(ONE_TAP_WAIT_SECONDS, max(0.1, deadline - time.monotonic()))
-    one_tap_rect, best_one_tap_score = _wait_for_one_tap(initial_wait)
-
+    one_tap_rect = _ensure_daily_one_tap(deadline)
     if one_tap_rect is None:
-        score_text = (
-            "无" if best_one_tap_score is None else f"{best_one_tap_score:.3f}"
-        )
-        print(
-            f"未识别到一键完成，最高分 {score_text}，"
-            "尝试点击右上“日常”标签"
-        )
-        _click_rect(DAILY_TAB_CLICK_REGION, "日常标签")
-        time.sleep(POST_ACTION_DELAY_SECONDS)
-        retry_wait = min(
-            ONE_TAP_WAIT_SECONDS,
-            max(0.1, deadline - time.monotonic()),
-        )
-        one_tap_rect, retry_score = _wait_for_one_tap(retry_wait)
-        if retry_score is not None and (
-            best_one_tap_score is None or retry_score > best_one_tap_score
-        ):
-            best_one_tap_score = retry_score
-        if one_tap_rect is None:
-            score_text = (
-                "无"
-                if best_one_tap_score is None
-                else f"{best_one_tap_score:.3f}"
-            )
-            print(
-                f"[ERROR] 点击“日常”标签后仍未识别到一键完成，"
-                f"最高分 {score_text}"
-            )
-            return False
+        return False
 
     # 2. 首次点击后按 claim → loading → verify_completion/exit 推进。
     phase = "claim"
@@ -432,7 +459,9 @@ def run() -> bool:
     # 1. 确认任务列表入口点击生效后，才开始领取。
     if not _wait_and_click("task_list", "任务列表", MAIN_WAIT_SECONDS):
         return False
-    # 2. 领取、补领和退出共用总超时；成功以重新出现主界面为准。
+    if not _wait_for_task_header(MAIN_WAIT_SECONDS):
+        return False
+    # 3. 领取、补领和退出共用总超时；成功以重新出现主界面为准。
     if not _complete_one_tap_and_exit():
         return False
     print("一键日常任务完成，已确认返回主界面")

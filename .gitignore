@@ -10,9 +10,6 @@ env/
 .idea/
 .flet/
 
-# Local test suite
-/tests/
-
 # Local coding and maintenance notes
 DEVELOPMENT_GUIDE.md
 

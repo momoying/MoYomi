@@ -161,6 +161,7 @@ MERCHANT_RESULT_DETAILS = {
     "blue_ticket_80": "发现80蓝票",
     "blue_ticket_90": "发现90蓝票",
     "no_blue_ticket": "没有蓝票",
+    "unknown_price": "蓝票价格未知",
     "skipped_after_50": "已有账号发现50，已跳过",
 }
 
