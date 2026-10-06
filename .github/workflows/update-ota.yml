@@ -15,6 +15,11 @@ jobs:
   build-ota:
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: refs/tags/${{ inputs.tag }}
+          fetch-depth: 0
+
       - name: Verify the target is a draft release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -25,11 +30,6 @@ jobs:
             echo "The target release must exist as a draft." >&2
             exit 1
           fi
-
-      - uses: actions/checkout@v4
-        with:
-          ref: refs/tags/${{ inputs.tag }}
-          fetch-depth: 0
 
       - name: Build full and incremental packages
         env:
