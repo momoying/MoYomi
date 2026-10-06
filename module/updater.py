@@ -20,7 +20,7 @@ from pathlib import Path, PurePosixPath
 from typing import Any, Callable, Optional
 
 
-APP_VERSION = "1.6.3"
+APP_VERSION = "1.6.4"
 GITHUB_REPOSITORY = "momoying/MoYomi"
 LATEST_RELEASE_URL = f"https://github.com/{GITHUB_REPOSITORY}/releases/latest"
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -382,7 +382,7 @@ def _install_requirements(python_executable: str, requirements: Path) -> None:
 def _creation_flags() -> int:
     if os.name != "nt":
         return 0
-    return subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.DETACHED_PROCESS
+    return subprocess.CREATE_NO_WINDOW
 
 
 def apply_update(
