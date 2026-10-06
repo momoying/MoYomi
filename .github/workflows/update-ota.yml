@@ -17,7 +17,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: refs/tags/${{ inputs.tag }}
+          ref: ${{ github.event.repository.default_branch }}
           fetch-depth: 0
 
       - name: Verify the target is a draft release
@@ -25,10 +25,21 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ inputs.tag }}
         run: |
-          is_draft="$(gh release view "$RELEASE_TAG" --json isDraft --jq .isDraft)"
+          release="$(gh release view "$RELEASE_TAG" --json isDraft,targetCommitish)"
+          is_draft="$(jq -r .isDraft <<< "$release")"
+          target="$(jq -r .targetCommitish <<< "$release")"
           if [ "$is_draft" != "true" ]; then
             echo "The target release must exist as a draft." >&2
             exit 1
+          fi
+          if ! git show-ref --verify --quiet "refs/tags/$RELEASE_TAG"; then
+            target_commit="$(git rev-parse --verify "${target}^{commit}" 2>/dev/null || true)"
+            if [ -z "$target_commit" ]; then
+              git fetch origin "$target"
+              target_commit="$(git rev-parse FETCH_HEAD)"
+            fi
+            git tag "$RELEASE_TAG" "$target_commit"
+            git push origin "refs/tags/$RELEASE_TAG"
           fi
 
       - name: Build full and incremental packages
