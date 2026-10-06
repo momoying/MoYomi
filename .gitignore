@@ -19,6 +19,7 @@ config/ui_settings.json
 cfg.txt
 /config/serverchan_notification_state.json
 /config/update_state.json
+/.moyomi-version.json
 .env
 
 # Local OCR models

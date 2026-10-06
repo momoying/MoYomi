@@ -411,7 +411,7 @@ class AssistantDashboard(
         self._refresh_serverchan_status()
         self.available_update: Optional[updater.ReleaseInfo] = None
         self.update_status = ft.Text(
-            f"当前版本 {updater.APP_VERSION}",
+            f"当前版本 {updater.APP_VERSION_LABEL}",
             size=11,
             color=COLORS["muted"],
         )

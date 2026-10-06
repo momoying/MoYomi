@@ -1,0 +1,44 @@
+name: Build update packages for draft release
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing draft release tag, for example v1.6.5
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  build-ota:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Verify the target is a draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.tag }}
+        run: |
+          is_draft="$(gh release view "$RELEASE_TAG" --json isDraft --jq .isDraft)"
+          if [ "$is_draft" != "true" ]; then
+            echo "The target release must exist as a draft." >&2
+            exit 1
+          fi
+
+      - uses: actions/checkout@v4
+        with:
+          ref: refs/tags/${{ inputs.tag }}
+          fetch-depth: 0
+
+      - name: Build full and incremental packages
+        env:
+          RELEASE_TAG: ${{ inputs.tag }}
+        run: python tools/build_update_package.py "$RELEASE_TAG" "dist"
+
+      - name: Attach packages to release
+        if: hashFiles('dist/MoYomi-*.zip') != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.tag }}
+        run: gh release upload "$RELEASE_TAG" dist/MoYomi-*.zip --clobber

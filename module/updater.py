@@ -20,19 +20,15 @@ from pathlib import Path, PurePosixPath
 from typing import Any, Callable, Optional
 
 
-APP_VERSION = "1.6.4"
 GITHUB_REPOSITORY = "momoying/MoYomi"
 LATEST_RELEASE_URL = f"https://github.com/{GITHUB_REPOSITORY}/releases/latest"
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 UPDATE_STATE_PATH = PROJECT_ROOT / "config" / "update_state.json"
+VERSION_METADATA_PATH = PROJECT_ROOT / ".moyomi-version.json"
 REQUEST_TIMEOUT_SECONDS = 8
 MAX_ARCHIVE_BYTES = 500 * 1024 * 1024
 _VERSION_PATTERN = re.compile(r"^v?(\d+)\.(\d+)\.(\d+)$")
-_ALLOWED_DOWNLOAD_HOSTS = {
-    "github.com",
-    "codeload.github.com",
-    "release-assets.githubusercontent.com",
-}
+_ALLOWED_DOWNLOAD_HOSTS = {"github.com", "release-assets.githubusercontent.com"}
 _PROTECTED_ROOTS = {
     ".git",
     ".venv",
@@ -46,6 +42,22 @@ _REQUIRED_FILES = {"ui.py", "requirements.txt", "module/updater.py"}
 _PATCH_METADATA_PATH = ".moyomi-update.json"
 
 
+def _installed_version() -> str:
+    try:
+        metadata = json.loads(VERSION_METADATA_PATH.read_text(encoding="utf-8"))
+        version = metadata.get("version") if isinstance(metadata, dict) else None
+        if isinstance(version, str) and _VERSION_PATTERN.fullmatch(version):
+            return version
+    except (OSError, ValueError, json.JSONDecodeError):
+        pass
+    # Source checkouts without release metadata are development builds.
+    return "0.0.0"
+
+
+APP_VERSION = _installed_version()
+APP_VERSION_LABEL = "开发版" if APP_VERSION == "0.0.0" else APP_VERSION
+
+
 class UpdateError(RuntimeError):
     """Raised when an update cannot be checked, prepared, or installed."""
 
@@ -57,8 +69,8 @@ class ReleaseInfo:
     name: str
     notes: str
     page_url: str
-    zip_url: str
     ota_url: str
+    full_url: str
 
 
 @dataclass(frozen=True)
@@ -123,15 +135,19 @@ def check_for_update(
 
     page_url = f"https://github.com/{GITHUB_REPOSITORY}/releases/tag/{tag_name}"
     quoted_tag = urllib.parse.quote(tag_name, safe="")
-    zip_url = (
-        f"https://github.com/{GITHUB_REPOSITORY}/archive/refs/tags/"
-        f"{quoted_tag}.zip"
-    )
-    current_tag = f"v{current_version.lstrip('v')}"
-    ota_name = f"MoYomi-OTA-{current_tag}_{tag_name}.zip"
-    ota_url = (
+    current_parsed = parse_version(current_version)
+    ota_url = ""
+    if current_parsed is not None and current_parsed != (0, 0, 0):
+        current_tag = f"v{current_version.lstrip('v')}"
+        ota_name = f"MoYomi-OTA-{current_tag}_{tag_name}.zip"
+        ota_url = (
+            f"https://github.com/{GITHUB_REPOSITORY}/releases/download/"
+            f"{quoted_tag}/{urllib.parse.quote(ota_name, safe='')}"
+        )
+    full_name = f"MoYomi-Full-{tag_name}.zip"
+    full_url = (
         f"https://github.com/{GITHUB_REPOSITORY}/releases/download/"
-        f"{quoted_tag}/{urllib.parse.quote(ota_name, safe='')}"
+        f"{quoted_tag}/{urllib.parse.quote(full_name, safe='')}"
     )
     return ReleaseInfo(
         version=".".join(str(part) for part in parsed),
@@ -139,8 +155,8 @@ def check_for_update(
         name=tag_name,
         notes="请点击“打开发布页”查看完整更新说明。",
         page_url=page_url,
-        zip_url=zip_url,
         ota_url=ota_url,
+        full_url=full_url,
     )
 
 
@@ -271,6 +287,25 @@ def validate_archive(path: Path) -> list[str]:
     return sorted(managed)
 
 
+def _read_archive_version(path: Path) -> Optional[str]:
+    try:
+        with zipfile.ZipFile(path) as archive:
+            files = [member for member in archive.infolist() if not member.is_dir()]
+            first_parts = {PurePosixPath(member.filename).parts[0] for member in files}
+            if len(first_parts) != 1:
+                return None
+            wrapper = next(iter(first_parts))
+            metadata = json.loads(
+                archive.read(f"{wrapper}/.moyomi-version.json").decode("utf-8")
+            )
+    except (OSError, zipfile.BadZipFile, KeyError, UnicodeDecodeError, ValueError):
+        return None
+    if not isinstance(metadata, dict):
+        return None
+    version = metadata.get("version")
+    return version if isinstance(version, str) and parse_version(version) else None
+
+
 def download_release(
     release: ReleaseInfo,
     *,
@@ -279,36 +314,43 @@ def download_release(
     temporary_dir = Path(tempfile.mkdtemp(prefix="moyomi-update-"))
     archive_path = temporary_dir / f"MoYomi-{release.version}.zip"
     try:
-        try:
-            _validate_download_url(release.ota_url)
-            with opener(_request(release.ota_url), timeout=REQUEST_TIMEOUT_SECONDS) as response:
-                final_url = response.geturl() if hasattr(response, "geturl") else release.ota_url
-                _validate_download_url(final_url)
-                archive_bytes = _read_limited(response, MAX_ARCHIVE_BYTES, "增量更新包")
-            archive_path.write_bytes(archive_bytes)
-            changed_files = validate_archive(archive_path)
-            with zipfile.ZipFile(archive_path) as archive:
-                metadata = _read_patch_metadata(archive)
-            if metadata is None:
-                raise UpdateError("发布的增量更新包缺少清单")
-            if metadata["from_version"] != APP_VERSION or metadata["to_version"] != release.version:
-                raise UpdateError("增量更新包版本不匹配")
-            return PreparedUpdate(
-                archive_path=archive_path,
-                temporary_dir=temporary_dir,
-                incremental=True,
-                changed_files=len(changed_files),
-            )
-        except Exception:
-            archive_path.unlink(missing_ok=True)
+        if release.ota_url:
+            try:
+                _validate_download_url(release.ota_url)
+                with opener(_request(release.ota_url), timeout=REQUEST_TIMEOUT_SECONDS) as response:
+                    final_url = response.geturl() if hasattr(response, "geturl") else release.ota_url
+                    _validate_download_url(final_url)
+                    archive_bytes = _read_limited(response, MAX_ARCHIVE_BYTES, "增量更新包")
+                archive_path.write_bytes(archive_bytes)
+                changed_files = validate_archive(archive_path)
+                with zipfile.ZipFile(archive_path) as archive:
+                    metadata = _read_patch_metadata(archive)
+                if metadata is None:
+                    raise UpdateError("发布的增量更新包缺少清单")
+                if (
+                    metadata["from_version"] != APP_VERSION
+                    or metadata["to_version"] != release.version
+                    or _read_archive_version(archive_path) != release.version
+                ):
+                    raise UpdateError("增量更新包版本不匹配")
+                return PreparedUpdate(
+                    archive_path=archive_path,
+                    temporary_dir=temporary_dir,
+                    incremental=True,
+                    changed_files=len(changed_files),
+                )
+            except Exception:
+                archive_path.unlink(missing_ok=True)
 
-        _validate_download_url(release.zip_url)
-        with opener(_request(release.zip_url), timeout=REQUEST_TIMEOUT_SECONDS) as response:
-            final_url = response.geturl() if hasattr(response, "geturl") else release.zip_url
+        _validate_download_url(release.full_url)
+        with opener(_request(release.full_url), timeout=REQUEST_TIMEOUT_SECONDS) as response:
+            final_url = response.geturl() if hasattr(response, "geturl") else release.full_url
             _validate_download_url(final_url)
-            archive_bytes = _read_limited(response, MAX_ARCHIVE_BYTES, "更新压缩包")
+            archive_bytes = _read_limited(response, MAX_ARCHIVE_BYTES, "完整更新包")
         archive_path.write_bytes(archive_bytes)
         changed_files = len(validate_archive(archive_path))
+        if _read_archive_version(archive_path) != release.version:
+            raise UpdateError("完整更新包版本与 Release 标签不匹配")
         return PreparedUpdate(
             archive_path=archive_path,
             temporary_dir=temporary_dir,
@@ -340,8 +382,11 @@ def _save_state(path: Path, state: dict[str, Any]) -> None:
 
 def consume_update_result(path: Path = UPDATE_STATE_PATH) -> Optional[dict[str, str]]:
     state = _load_state(path)
+    had_legacy_version = state.pop("installed_version", None) is not None
     result = state.pop("last_result", None)
     if not isinstance(result, dict):
+        if had_legacy_version:
+            _save_state(path, state)
         return None
     _save_state(path, state)
     return {str(key): str(value) for key, value in result.items()}
@@ -398,6 +443,7 @@ def apply_update(
     root = root.resolve()
     state_path = root / "config" / "update_state.json"
     state = _load_state(state_path)
+    state.pop("installed_version", None)
     old_managed = {
         str(item)
         for item in state.get("managed_files", [])
@@ -414,6 +460,11 @@ def apply_update(
         with zipfile.ZipFile(archive_path) as archive:
             metadata = _read_patch_metadata(archive)
             members = _archive_members(archive)
+            if metadata is None:
+                if _read_archive_version(archive_path) != target_version:
+                    raise UpdateError("完整更新包版本与目标版本不匹配")
+            elif metadata["to_version"] != target_version:
+                raise UpdateError("增量更新包版本与目标版本不匹配")
             deleted_files = set(metadata["deleted"]) if metadata is not None else set()
             if metadata is None:
                 new_managed = set(members)
@@ -488,6 +539,9 @@ def apply_update(
             cwd=str(root),
             creationflags=_creation_flags(),
             close_fds=True,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
         )
     return success
 
@@ -551,6 +605,9 @@ def launch_installer(
         cwd=str(prepared.temporary_dir.parent),
         creationflags=_creation_flags(),
         close_fds=True,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
     )
 
 
@@ -578,6 +635,7 @@ def _main() -> int:
     except Exception as exc:
         state_path = Path(root) / "config" / "update_state.json"
         state = _load_state(state_path)
+        state.pop("installed_version", None)
         state["last_result"] = {
             "status": "error",
             "version": version,
@@ -589,6 +647,9 @@ def _main() -> int:
             cwd=str(root),
             creationflags=_creation_flags(),
             close_fds=True,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
         )
         return 1
 

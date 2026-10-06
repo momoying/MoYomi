@@ -231,7 +231,7 @@ class SettingsPageMixin:
         if result is None:
             return
         self.update_status.value = result.get("message") or (
-            f"当前版本 {updater.APP_VERSION}"
+            f"当前版本 {updater.APP_VERSION_LABEL}"
         )
         self.update_status.color = (
             COLORS["done"]
@@ -266,7 +266,7 @@ class SettingsPageMixin:
             if release is None:
                 if not silent:
                     self.update_status.value = (
-                        f"当前已是最新版本 {updater.APP_VERSION}"
+                        f"当前已是最新版本 {updater.APP_VERSION_LABEL}"
                     )
                     self.update_status.color = COLORS["done"]
             else:
@@ -328,7 +328,10 @@ class SettingsPageMixin:
             self._safe_update()
             return
 
-        os._exit(0)
+        try:
+            await self.page.window.close()
+        finally:
+            os._exit(0)
 
 
     def _build_task_settings_panel(self) -> ft.Control:
