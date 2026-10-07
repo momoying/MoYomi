@@ -126,7 +126,10 @@ class LayoutMixin:
                         ],
                         spacing=12,
                     ),
-                    self.running_badge,
+                    ft.Row(
+                        [self.update_notice, self.running_badge],
+                        spacing=10,
+                    ),
                 ],
                 alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
             ),

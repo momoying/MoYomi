@@ -137,37 +137,44 @@ def connect_to_mumu(force=False):
     connection_key = (str(adb_path), str(adb_port))
     if not force and _adb_connected_key == connection_key:
         return True
-    try:
-        result = subprocess.run(
-            [adb_path, "connect", adb_port],
-            capture_output=True,
-            text=True,
-            timeout=8,
-        )
-        if result.returncode != 0:
-            _invalidate_adb_connection()
-            return False
-        state = subprocess.run(
-            [adb_path, "-s", adb_port, "get-state"],
-            capture_output=True,
-            text=True,
-            timeout=8,
-        )
-
-        connected = (
-            state.returncode == 0
-            and state.stdout.strip() == "device"
-        )
-        _adb_connected_key = connection_key if connected else None
-        # print("result：{}".format(result))
-        # print("state：{}".format(state))
-        # print("connected：{}".format(connected))
-        # print("_adb_connected_key：{}".format(_adb_connected_key))
-        return connected
-    except Exception:
-        _invalidate_adb_connection()
-        # print("连接失败")
-        return False
+    _invalidate_adb_connection()
+    run_options = {
+        "capture_output": True,
+        "encoding": "utf-8",
+        "errors": "replace",
+        "timeout": 8,
+        "creationflags": subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
+    }
+    last_error = "设备未就绪"
+    offline_reset = False
+    for attempt in range(3):
+        if attempt:
+            time.sleep(0.5)
+        try:
+            result = subprocess.run([adb_path, "connect", adb_port], **run_options)
+            connect_message = (result.stderr or result.stdout).strip()
+            if result.returncode != 0:
+                last_error = f"connect：{connect_message or result.returncode}"
+                continue
+            # connect 可能返回 already connected，但设备实际仍是 offline。
+            state = subprocess.run(
+                [adb_path, "-s", adb_port, "get-state"], **run_options
+            )
+            if state.returncode == 0 and state.stdout.strip() == "device":
+                _adb_connected_key = connection_key
+                return True
+            state_message = (state.stderr or state.stdout).strip()
+            last_error = f"connect：{connect_message}；get-state：{state_message or state.returncode}"
+            if "unauthorized" in state_message.lower():
+                break
+            if "offline" in state_message.lower() and not offline_reset:
+                offline_reset = True
+                print(f"MuMu ADB 设备离线，断开并重连当前实例：{adb_port}")
+                subprocess.run([adb_path, "disconnect", adb_port], **run_options)
+        except (OSError, subprocess.SubprocessError) as exc:
+            last_error = str(exc)
+    print(f"连接 MuMu ADB 失败（{adb_path}，{adb_port}）：{last_error}")
+    return False
 
 
 def _infer_mumu_index(address: str) -> int:

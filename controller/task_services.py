@@ -124,6 +124,15 @@ def build_services(
             screenshot_keep_count=screenshot_keep_count,
         )
 
+    def recover_completed_coop(stop_event=None):
+        return task_recovery_module.recover_to_courtyard(
+            stop_event=stop_event,
+            timeout=max(0.1, float(recovery_timeout_seconds)),
+            unknown_grace=max(0.1, float(recovery_unknown_grace_seconds)),
+            screenshot_keep_count=screenshot_keep_count,
+            allow_completed_reward=True,
+        )
+
     def recover_heart_team(stop_event=None):
         return task_modules[HEART_TEAM_TASK].recover_to_courtyard(
             stop_event=stop_event,
@@ -165,7 +174,7 @@ def build_services(
             HEART_TEAM_TASK: recover_heart_team,
         },
         task_completion_recoveries={
-            COOP_REWARD_TASK: recover_generic,
+            COOP_REWARD_TASK: recover_completed_coop,
             HEART_TEAM_TASK: recover_heart_team,
         },
     )

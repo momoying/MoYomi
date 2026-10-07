@@ -264,6 +264,8 @@ class SettingsPageMixin:
                 self.update_status.color = COLORS["error"]
         else:
             if release is None:
+                self.available_update = None
+                self.update_notice.visible = False
                 if not silent:
                     self.update_status.value = (
                         f"当前已是最新版本 {updater.APP_VERSION_LABEL}"
@@ -273,6 +275,8 @@ class SettingsPageMixin:
                 self.available_update = release
                 self.update_status.value = f"发现新版本 {release.version}"
                 self.update_status.color = COLORS["active"]
+                self.update_notice.content = f"检测到新版本 v{release.version} · 点击查看"
+                self.update_notice.visible = True
                 self.update_dialog_title.value = f"发现新版本 {release.version}"
                 notes = release.notes or "本次 Release 未填写更新说明。"
                 if len(notes) > 2000:
@@ -282,7 +286,8 @@ class SettingsPageMixin:
                 self.update_dialog_message.color = COLORS["muted"]
                 self.update_progress.visible = False
                 self.update_install_button.disabled = False
-                self.page.show_dialog(self.update_dialog)
+                if not silent:
+                    self.show_available_update()
         finally:
             self.update_check_button.disabled = bool(self.running or self.tool_running)
             self._safe_update()
@@ -290,6 +295,11 @@ class SettingsPageMixin:
 
     def close_update_dialog(self, _event: Any = None) -> None:
         self.page.pop_dialog()
+
+
+    def show_available_update(self, _event: Any = None) -> None:
+        if self.available_update is not None:
+            self.page.show_dialog(self.update_dialog)
 
 
     async def open_release_page(self, _event: Any = None) -> None:
@@ -729,6 +739,11 @@ class SettingsPageMixin:
 
     def _update_mumu_status(self) -> None:
         selected = self._selected_mumu()
+        port = selected["adb_port"].rsplit(":", 1)[-1] if selected else "未选择"
+        version = updater.APP_VERSION_LABEL
+        if version != "开发版":
+            version = f"v{version}"
+        self.page.title = f"MoYomi {version} - MuMu ({port})"
         if selected is not None:
             self.mumu_status.value = (
                 f'ADB {selected["adb_port"]} · 截图与输入使用实例 {selected["index"]}'

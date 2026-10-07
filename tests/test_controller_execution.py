@@ -228,6 +228,31 @@ class ControllerExecutionTests(unittest.TestCase):
 
 
 class TaskResultTests(unittest.TestCase):
+    def test_only_recorded_coop_completion_allows_reward_handling(self):
+        task_module = SimpleNamespace(
+            run=Mock(), check_bounty=Mock(), check_merchant=Mock(),
+            check_consignment_house=Mock(), recover_to_courtyard=Mock(),
+            select_account=Mock(), exit_to_login=Mock(),
+        )
+        timeout_recovery = SimpleNamespace(recover_to_courtyard=Mock(return_value=True))
+
+        def load(name, path):
+            return timeout_recovery if name == "task_timeout_recovery" else task_module
+
+        with patch.object(task_services, "_load_module", side_effect=load), patch.object(
+            task_services, "configure_error_screenshots"
+        ):
+            services = task_services.build_services()
+
+        services.task_timeout_recovery()
+        services.task_failure_recoveries[COOP_REWARD_TASK]()
+        services.task_completion_recoveries[COOP_REWARD_TASK]()
+        calls = timeout_recovery.recover_to_courtyard.call_args_list
+        self.assertEqual(len(calls), 3)
+        self.assertNotIn("allow_completed_reward", calls[0].kwargs)
+        self.assertNotIn("allow_completed_reward", calls[1].kwargs)
+        self.assertTrue(calls[2].kwargs["allow_completed_reward"])
+
     def test_detection_results_are_validated_including_unknown_price(self):
         for task, value, completed in (
             (BOUNTY_TASK, "no_magatama_collaboration", True),

@@ -427,6 +427,12 @@ class AssistantDashboard(
             icon=ft.Icons.SYSTEM_UPDATE_ALT_ROUNDED,
             on_click=self.check_for_updates,
         )
+        self.update_notice = ft.TextButton(
+            content="",
+            icon=ft.Icons.SYSTEM_UPDATE_ALT_ROUNDED,
+            visible=False,
+            on_click=self.show_available_update,
+        )
         self.update_dialog_title = ft.Text("发现新版本")
         self.update_dialog_notes = ft.Text(
             size=12,

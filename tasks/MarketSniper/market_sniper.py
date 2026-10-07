@@ -210,7 +210,7 @@ def run(refresh_count: int, stop_event=None) -> bool:
             print(f"已刷新 {refreshes} 次，仍无寄售商品，本次抢购结束")
             return True
 
-        delay = random.uniform(1.0, 2.0)
+        delay = random.uniform(5.0, 6.0)
         print(
             f"暂无寄售商品，{delay:.1f} 秒后进行第 "
             f"{refreshes + 1}/{refresh_count} 次刷新"
