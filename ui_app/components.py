@@ -45,6 +45,7 @@ class AccountCardView:
         now: datetime,
         task_mode: str = controller.DAILY_MODE,
         single_task_name: Optional[str] = None,
+        on_detection_open: Optional[Callable[[str, str, str], None]] = None,
     ) -> None:
         self.account = account
         self.system = system
@@ -113,6 +114,15 @@ class AccountCardView:
                 completed_detail=completed_detail,
                 available=available,
                 enabled=enabled,
+                on_secondary_tap=(
+                    (lambda name=task_name: on_detection_open(self.account, self.system, name))
+                    if task_mode == controller.DAILY_MODE
+                    and on_detection_open
+                    and task_name in {controller.BOUNTY_TASK, controller.MERCHANT_TASK}
+                    and enabled
+                    and available
+                    else None
+                ),
             )
             if task_name == controller.BOUNTY_TASK:
                 bounty_style = BOUNTY_HIGHLIGHT_STYLES.get(
@@ -133,8 +143,6 @@ class AccountCardView:
                     due_count == 0 and merchant_style is not None,
                     merchant_style or "default",
                 )
-                if task_view.status == "unavailable":
-                    task_view.control.visible = False
             self.task_views[task_name] = task_view
 
         system_icon = (
@@ -174,6 +182,7 @@ class AccountCardView:
                 if task_mode == controller.WEEKLY_MODE or single_task_name is not None
                 else 6
             )
+        self.task_divider = ft.Divider(height=4, color="transparent")
 
         self.control = ft.Container(
             col={"xs": 12, "sm": 6, "md": 4},
@@ -216,21 +225,13 @@ class AccountCardView:
                         spacing=10,
                         vertical_alignment=ft.CrossAxisAlignment.CENTER,
                     ),
-                    ft.Divider(height=4, color="transparent"),
+                    self.task_divider,
                     self.task_grid,
                 ],
                 spacing=8,
             ),
         )
         self.refresh_overall()
-
-    def refresh_key_results(self) -> None:
-        """保持关键任务展示状态与任务开放时间同步。"""
-        if self.task_mode != controller.DAILY_MODE:
-            return
-        merchant = self.task_views.get(controller.MERCHANT_TASK)
-        if merchant is not None and merchant.status == "unavailable":
-            merchant.control.visible = False
 
     def important_result_labels(self) -> list[str]:
         """返回当前可见、值得用户关注的悬赏与奸商结果。"""
@@ -260,8 +261,12 @@ class AccountCardView:
             self.set_phase("error", "执行失败")
         elif "active" in task_statuses:
             self.set_phase("active", "正在执行")
-        elif task_statuses <= {"done", "unavailable", "disabled"}:
+        elif task_statuses and task_statuses <= {"done"}:
             self.set_phase("done", "当前任务全部完成")
+        elif task_statuses <= {"unavailable", "disabled"}:
+            self.set_phase("unavailable", "当前无可执行任务")
+        elif task_statuses <= {"done", "unavailable", "disabled"}:
+            self.set_phase("unavailable", "当前无待执行任务")
         else:
             self.set_phase("pending", "等待进入队列")
 
@@ -274,6 +279,7 @@ class TaskStatusView:
         completed_detail: Optional[str] = None,
         available: bool = True,
         enabled: bool = True,
+        on_secondary_tap: Optional[Callable[[], None]] = None,
     ) -> None:
         self.task_name = task_name
         self.status = (
@@ -306,7 +312,7 @@ class TaskStatusView:
             max_lines=1,
             overflow=ft.TextOverflow.ELLIPSIS,
         )
-        self.control = ft.Container(
+        self.tile = ft.Container(
             padding=ft.Padding.symmetric(horizontal=9, vertical=8),
             border_radius=10,
             content=ft.Row(
@@ -317,6 +323,15 @@ class TaskStatusView:
                 spacing=7,
                 vertical_alignment=ft.CrossAxisAlignment.CENTER,
             ),
+        )
+        self.control = (
+            ft.GestureDetector(
+                content=self.tile,
+                on_secondary_tap=lambda _event: on_secondary_tap(),
+                on_long_press=lambda _event: on_secondary_tap(),
+            )
+            if on_secondary_tap
+            else self.tile
         )
         self.set_status(self.status, self.detail.value)
 
@@ -358,8 +373,8 @@ class TaskStatusView:
         if show_highlight:
             self.icon.color = highlight["border"]
             self.detail.color = highlight["border"]
-        self.control.bgcolor = None if show_highlight else background
-        self.control.gradient = (
+        self.tile.bgcolor = None if show_highlight else background
+        self.tile.gradient = (
             ft.LinearGradient(
                 begin=ft.Alignment.TOP_LEFT,
                 end=ft.Alignment.BOTTOM_RIGHT,
@@ -368,7 +383,7 @@ class TaskStatusView:
             if show_highlight
             else None
         )
-        self.control.border = ft.Border.all(
+        self.tile.border = ft.Border.all(
             highlight["width"] if show_highlight else 1,
             highlight["border"] if show_highlight else color,
         )

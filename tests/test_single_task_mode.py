@@ -9,8 +9,12 @@ from unittest.mock import patch
 
 from controller import daily_runner, state_store
 from controller.constants import (
+    BOUNTY_TASK,
     CONSIGNMENT_HOUSE_TASK,
+    DAILY_MODE,
+    GUILD_KIRIN_TASK,
     MAIL_TASK,
+    MERCHANT_TASK,
     STATUS_VERSION,
     TASK_ORDER,
     WEEKLY_MODE,
@@ -88,6 +92,113 @@ class SingleTaskQueueTests(unittest.TestCase):
 
 
 class SingleTaskCardTests(unittest.TestCase):
+    def test_selector_hides_closed_and_globally_disabled_daily_tasks(self):
+        system = state_store._empty_system_state()
+        system["task_enabled"] = {name: False for name in TASK_ORDER}
+        system["task_enabled"].update({
+            MAIL_TASK: True,
+            MERCHANT_TASK: True,
+            GUILD_KIRIN_TASK: True,
+        })
+        system["cross_region_enabled"] = True
+        state = {"accounts": {"account": {"systems": {"IOS": system}}}}
+        dashboard = AssistantDashboard.__new__(AssistantDashboard)
+        dashboard.task_mode = DAILY_MODE
+        dashboard.single_task_mode = True
+        dashboard.single_task_name = MERCHANT_TASK
+        dashboard.running = False
+        dashboard.single_task_selector = SimpleNamespace(value=MERCHANT_TASK)
+        dashboard.start_button = SimpleNamespace(disabled=False)
+
+        dashboard._refresh_single_task_options(
+            state, datetime(2026, 10, 9, 12, tzinfo=timezone.utc)
+        )
+
+        self.assertEqual(
+            [option.key for option in dashboard.single_task_selector.options],
+            [MAIL_TASK, BOUNTY_TASK, "liked"],
+        )
+        self.assertIsNone(dashboard.single_task_name)
+        self.assertIsNone(dashboard.single_task_selector.value)
+        self.assertTrue(dashboard.start_button.disabled)
+        self.assertFalse(dashboard.single_task_selector.disabled)
+
+        dashboard._refresh_single_task_options(state, NOW)
+        self.assertIn(
+            MERCHANT_TASK,
+            [option.key for option in dashboard.single_task_selector.options],
+        )
+
+    def test_weekly_selector_keeps_consignment_with_active_account(self):
+        dashboard = AssistantDashboard.__new__(AssistantDashboard)
+        dashboard.task_mode = WEEKLY_MODE
+        dashboard.single_task_mode = True
+        dashboard.single_task_name = CONSIGNMENT_HOUSE_TASK
+        dashboard.running = False
+        dashboard.single_task_selector = SimpleNamespace(value=CONSIGNMENT_HOUSE_TASK)
+        dashboard.start_button = SimpleNamespace(disabled=False)
+
+        dashboard._refresh_single_task_options(_state_for_accounts(), NOW)
+
+        self.assertEqual(
+            [option.key for option in dashboard.single_task_selector.options],
+            [CONSIGNMENT_HOUSE_TASK],
+        )
+        self.assertEqual(dashboard.single_task_name, CONSIGNMENT_HOUSE_TASK)
+        self.assertFalse(dashboard.single_task_selector.disabled)
+
+    def test_empty_selector_explains_why_selection_is_disabled(self):
+        system = state_store._empty_system_state()
+        system["task_enabled"] = {name: False for name in TASK_ORDER}
+        state = {"accounts": {"account": {"systems": {"IOS": system}}}}
+        dashboard = AssistantDashboard.__new__(AssistantDashboard)
+        dashboard.task_mode = DAILY_MODE
+        dashboard.single_task_mode = True
+        dashboard.single_task_name = None
+        dashboard.running = False
+        dashboard.single_task_selector = SimpleNamespace(value=None)
+        dashboard.start_button = SimpleNamespace(disabled=False)
+
+        dashboard._refresh_single_task_options(state, NOW)
+
+        self.assertEqual(dashboard.single_task_selector.options, [])
+        self.assertTrue(dashboard.single_task_selector.disabled)
+        self.assertEqual(dashboard.single_task_selector.hint_text, "当前无可选任务")
+        self.assertTrue(dashboard.start_button.disabled)
+
+        system["task_enabled"][MAIL_TASK] = True
+        dashboard._refresh_single_task_options(state, NOW)
+        self.assertFalse(dashboard.single_task_selector.disabled)
+        self.assertEqual(dashboard.single_task_selector.hint_text, "请选择任务")
+
+    def test_empty_selector_message_is_shown_in_account_area(self):
+        dashboard = AssistantDashboard.__new__(AssistantDashboard)
+        dashboard.task_mode = DAILY_MODE
+        dashboard.single_task_mode = True
+        dashboard.single_task_name = None
+        dashboard.running = False
+        dashboard.single_task_selector = SimpleNamespace(value=None, options=[])
+        dashboard.start_button = SimpleNamespace(disabled=False)
+        dashboard.cards = {}
+        dashboard.cards_grid = SimpleNamespace(controls=[])
+        dashboard.summary_text = SimpleNamespace(value="")
+        dashboard.important_results_bar = SimpleNamespace(visible=True)
+        dashboard.important_summary_text = SimpleNamespace(value="", color=None)
+        dashboard.important_filter_button = SimpleNamespace(content=None, bgcolor=None)
+        dashboard.show_important_only = False
+        dashboard.hide_unavailable_tasks = SimpleNamespace(value=False)
+        dashboard.append_log = lambda *_args: None
+        daily_state = {"accounts": {}}
+
+        with patch("ui_app.pages.daily.controller.load_state", return_value=(daily_state, False)):
+            self.assertTrue(dashboard.refresh_cards(update=False))
+
+        self.assertEqual(dashboard.summary_text.value, "当前无可选任务")
+        self.assertEqual(
+            dashboard.cards_grid.controls[0].content.value,
+            "当前无可选任务",
+        )
+
     def test_account_card_shows_only_selected_task(self):
         card = AccountCardView(
             "account",
@@ -110,7 +221,6 @@ class SingleTaskCardTests(unittest.TestCase):
             single_task_name=BOUNTY_TASK,
         )
 
-        card.refresh_key_results()
         self.assertEqual(card.important_result_labels(), [])
 
     def test_weekly_card_keeps_the_existing_consignment_task(self):

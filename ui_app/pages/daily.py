@@ -38,6 +38,13 @@ def parse_one_shot_run_at(
     return scheduled_at
 
 
+def _task_availability(now: datetime) -> tuple[bool, bool]:
+    return (
+        controller.task_is_available(controller.MERCHANT_TASK, now),
+        controller.task_is_available(controller.GUILD_KIRIN_TASK, now),
+    )
+
+
 class DailyPageMixin:
     def _build_daily_page(self) -> ft.Control:
         self.single_task_selector_panel = ft.Column(
@@ -106,6 +113,12 @@ class DailyPageMixin:
             tight=True,
             vertical_alignment=ft.CrossAxisAlignment.CENTER,
         )
+        self.important_results_chips = ft.Row(
+            spacing=8,
+            expand=True,
+            scroll=ft.ScrollMode.AUTO,
+            vertical_alignment=ft.CrossAxisAlignment.CENTER,
+        )
         self.important_results_bar = ft.Container(
             bgcolor="#AA171E2A",
             border=ft.Border.all(1, COLORS["border"]),
@@ -121,6 +134,7 @@ class DailyPageMixin:
                                 color=COLORS["warning"],
                             ),
                             self.important_summary_text,
+                            self.important_results_chips,
                         ],
                         spacing=7,
                         expand=True,
@@ -195,6 +209,7 @@ class DailyPageMixin:
             return False
 
         now = datetime.now().astimezone()
+        self._refresh_single_task_options(daily_state, now)
         self.cards.clear()
         self.cards_grid.controls.clear()
         if self.single_task_mode and self.single_task_name is None:
@@ -211,6 +226,7 @@ class DailyPageMixin:
                     single_task_name=(
                         self.single_task_name if self.single_task_mode else None
                     ),
+                    on_detection_open=self._show_detection_dialog,
                 )
                 self.cards[(account, system)] = card
                 self.cards_grid.controls.append(card.control)
@@ -219,7 +235,11 @@ class DailyPageMixin:
                 ft.Container(
                     padding=20,
                     content=ft.Text(
-                        "请先选择一个任务",
+                        (
+                            "请先选择一个任务"
+                            if self.single_task_selector.options
+                            else "当前无可选任务"
+                        ),
                         size=13,
                         color=COLORS["muted"],
                     ),
@@ -227,8 +247,283 @@ class DailyPageMixin:
             )
         self._apply_task_visibility()
         self._refresh_task_summary()
+        self._last_task_availability = _task_availability(now)
         if update:
             self._safe_update()
+        return True
+
+    def _show_detection_dialog(
+        self,
+        account: str,
+        system: str,
+        task_name: str,
+    ) -> None:
+        if self.running or self.task_mode != controller.DAILY_MODE:
+            return
+        try:
+            state, _ = controller.load_state(controller.STATUS_PATH)
+            system_state = state["accounts"][account]["systems"][system]
+        except (OSError, KeyError, ValueError) as exc:
+            self.append_log("ERROR", f"无法读取检测状态：{exc}")
+            return
+
+        now = datetime.now().astimezone()
+
+        def choose(region: str, result: str | None) -> None:
+            if self._set_manual_detection_result(account, system, task_name, region, result):
+                self.page.pop_dialog()
+
+        def option(
+            label: str,
+            region: str,
+            result: str,
+            current: str | None,
+            accent: str,
+            selected_bg: str,
+            width: int,
+        ) -> ft.Button:
+            selected = result == current
+            controls: list[ft.Control] = [
+                ft.Text(label, size=12, weight=ft.FontWeight.W_600, expand=True)
+            ]
+            if selected:
+                controls.append(ft.Icon(ft.Icons.CHECK_ROUNDED, size=17, color=accent))
+            return ft.Button(
+                content=ft.Row(controls, spacing=4),
+                width=width,
+                height=44,
+                color=accent if selected else COLORS["text"],
+                bgcolor=selected_bg if selected else COLORS["panel"],
+                elevation=0,
+                style=ft.ButtonStyle(
+                    side=ft.BorderSide(1, accent if selected else COLORS["border"]),
+                    shape=ft.RoundedRectangleBorder(radius=11),
+                    padding=ft.Padding.symmetric(horizontal=12, vertical=6),
+                ),
+                on_click=lambda _event: choose(region, result),
+            )
+
+        if task_name == controller.BOUNTY_TASK:
+            regions = []
+            if controller.task_is_enabled(system_state, task_name):
+                regions.append(controller.SAME_REGION)
+            if controller.cross_region_is_enabled(system_state):
+                regions.append(controller.CROSS_REGION)
+            if not regions:
+                return
+
+            panels = []
+            for region in regions:
+                accent = "#93C5FD" if region == controller.SAME_REGION else "#C4B5FD"
+                selected_bg = "#203852" if region == controller.SAME_REGION else "#302849"
+                current = (
+                    controller.task_record_result(system_state, task_name, region)
+                    if not controller.task_is_due(task_name, system_state, now, region=region)
+                    else None
+                )
+                panels.append(
+                    ft.Container(
+                        width=240,
+                        padding=14,
+                        bgcolor=COLORS["panel_alt"],
+                        border=ft.Border.all(1, COLORS["border"]),
+                        border_radius=14,
+                        content=ft.Column(
+                            [
+                                ft.Text(
+                                    controller.REGION_LABELS[region],
+                                    size=14,
+                                    color=accent,
+                                    weight=ft.FontWeight.BOLD,
+                                ),
+                                *(
+                                    option(
+                                        label, region, result, current,
+                                        accent, selected_bg, 212,
+                                    )
+                                    for result, label in controller.BOUNTY_RESULT_DETAILS.items()
+                                ),
+                                ft.TextButton(
+                                    content="恢复待检测",
+                                    icon=ft.Icons.REPLAY_ROUNDED,
+                                    on_click=lambda _event, region=region: choose(region, None),
+                                ),
+                            ],
+                            spacing=8,
+                            tight=True,
+                        ),
+                    )
+                )
+            body: ft.Control = ft.Row(panels, spacing=12, tight=True)
+        elif task_name == controller.MERCHANT_TASK:
+            if not controller.task_is_enabled(
+                system_state, task_name
+            ) or not controller.task_is_available(task_name, now):
+                return
+            current = (
+                controller.task_record_result(system_state, task_name)
+                if not controller.task_is_due(task_name, system_state, now)
+                else None
+            )
+            prices = [
+                result
+                for result in controller.MERCHANT_RESULT_DETAILS
+                if result.startswith("blue_ticket_")
+            ]
+            body = ft.Container(
+                width=500,
+                padding=14,
+                bgcolor=COLORS["panel_alt"],
+                border=ft.Border.all(1, COLORS["border"]),
+                border_radius=14,
+                content=ft.Column(
+                    [
+                        ft.Text(
+                            "蓝票价格",
+                            size=12,
+                            weight=ft.FontWeight.BOLD,
+                            color=COLORS["text"],
+                        ),
+                        ft.Row(
+                            [
+                                option(
+                                    result.rsplit("_", 1)[-1],
+                                    controller.SAME_REGION,
+                                    result, current,
+                                    (
+                                        "#F6C85F"
+                                        if result == controller.MERCHANT_STOP_RESULT
+                                        else "#93C5FD"
+                                    ),
+                                    (
+                                        COLORS["warning_bg"]
+                                        if result == controller.MERCHANT_STOP_RESULT
+                                        else COLORS["active_bg"]
+                                    ),
+                                    88,
+                                )
+                                for result in prices
+                            ],
+                            spacing=8,
+                            tight=True,
+                        ),
+                        ft.Row(
+                            [
+                                option(
+                                    label, controller.SAME_REGION, result, current,
+                                    "#93C5FD", COLORS["active_bg"], 230,
+                                )
+                                for result, label in (
+                                    ("no_blue_ticket", "没有蓝票"),
+                                    ("unknown_price", "蓝票价格未知"),
+                                )
+                            ],
+                            spacing=8,
+                            tight=True,
+                        ),
+                        ft.TextButton(
+                            content="恢复待检测",
+                            icon=ft.Icons.REPLAY_ROUNDED,
+                            on_click=lambda _event: choose(controller.SAME_REGION, None),
+                        ),
+                    ],
+                    spacing=10,
+                    tight=True,
+                ),
+            )
+        else:
+            return
+
+        dialog = ft.AlertDialog(
+            modal=False,
+            bgcolor=COLORS["panel"],
+            shape=ft.RoundedRectangleBorder(radius=18),
+            title=ft.Row(
+                [
+                    ft.Container(
+                        width=38,
+                        height=38,
+                        border_radius=11,
+                        bgcolor=COLORS["active_bg"],
+                        alignment=ft.Alignment.CENTER,
+                        content=ft.Icon(
+                            TASK_ICONS[task_name], color=COLORS["active"], size=21
+                        ),
+                    ),
+                    ft.Column(
+                        [
+                            ft.Text(
+                                f"设置{controller.TASK_LABELS[task_name]}结果",
+                                size=16,
+                                weight=ft.FontWeight.BOLD,
+                            ),
+                            ft.Text(
+                                f"{account} · {system}",
+                                size=11,
+                                color=COLORS["muted"],
+                            ),
+                        ],
+                        spacing=2,
+                        tight=True,
+                    ),
+                ],
+                spacing=11,
+                tight=True,
+            ),
+            content=body,
+        )
+        self.page.show_dialog(dialog)
+
+    def _set_manual_detection_result(
+        self,
+        account: str,
+        system: str,
+        task_name: str,
+        region: str,
+        result: str | None,
+    ) -> bool:
+        if self.running or self.task_mode != controller.DAILY_MODE:
+            self.append_log("WARN", "运行期间不能修改检测状态")
+            return False
+        now = datetime.now().astimezone()
+        try:
+            state, _ = controller.load_state(controller.STATUS_PATH)
+            system_state = state["accounts"][account]["systems"][system]
+            enabled = (
+                controller.cross_region_is_enabled(system_state)
+                if task_name == controller.BOUNTY_TASK
+                and region == controller.CROSS_REGION
+                else controller.task_is_enabled(system_state, task_name)
+            )
+            if not enabled:
+                raise ValueError("该检测任务已禁用")
+            if task_name == controller.MERCHANT_TASK and not controller.task_is_available(
+                task_name, now
+            ):
+                raise ValueError("奸商检测今日未开放")
+            controller.set_manual_detection_result(
+                state, account, system, task_name, result, now, region=region
+            )
+            controller.save_state(state, controller.STATUS_PATH)
+        except (OSError, KeyError, ValueError) as exc:
+            self.append_log("ERROR", f"保存检测状态失败：{exc}")
+            return False
+
+        self.refresh_cards()
+        label = (
+            controller.BOUNTY_RESULT_DETAILS.get(result)
+            if task_name == controller.BOUNTY_TASK
+            else controller.MERCHANT_RESULT_DETAILS.get(result)
+        ) or "恢复待检测"
+        region_label = (
+            f" · {controller.REGION_LABELS[region]}"
+            if task_name == controller.BOUNTY_TASK
+            else ""
+        )
+        self.append_log(
+            "INFO",
+            f"{account} · {system}{region_label} · {controller.TASK_LABELS[task_name]}：{label}",
+        )
         return True
 
 
@@ -242,7 +537,11 @@ class DailyPageMixin:
             for card in self.cards.values()
         )
         if self.single_task_mode and self.single_task_name is None:
-            self.summary_text.value = "请选择任务"
+            self.summary_text.value = (
+                "请选择任务"
+                if self.single_task_selector.options
+                else "当前无可选任务"
+            )
         else:
             self.summary_text.value = (
                 f"{len(self.cards)} 个角色 · {due_systems} 个待执行"
@@ -264,6 +563,38 @@ class DailyPageMixin:
             )
             self.important_summary_text.value = f"重要结果：{rendered}"
             self.important_summary_text.color = COLORS["warning"]
+            self.important_summary_text.visible = not hasattr(
+                self, "important_results_chips"
+            )
+            if hasattr(self, "important_results_chips"):
+                self.important_results_chips.controls = [
+                    ft.Container(
+                        padding=ft.Padding.symmetric(horizontal=11, vertical=6),
+                        bgcolor=(
+                            COLORS["warning_bg"]
+                            if label in {"现世勾协", "发现50蓝票"}
+                            else COLORS["active_bg"]
+                        ),
+                        border=ft.Border.all(
+                            1,
+                            COLORS["warning"]
+                            if label in {"现世勾协", "发现50蓝票"}
+                            else COLORS["active"],
+                        ),
+                        border_radius=8,
+                        content=ft.Text(
+                            f"{label} ×{count}" if count > 1 else label,
+                            size=12,
+                            weight=ft.FontWeight.W_600,
+                            color=(
+                                COLORS["warning"]
+                                if label in {"现世勾协", "发现50蓝票"}
+                                else COLORS["text"]
+                            ),
+                        ),
+                    )
+                    for label, count in important_results.items()
+                ]
         else:
             merchant_open = controller.task_is_available(
                 controller.MERCHANT_TASK,
@@ -272,6 +603,9 @@ class DailyPageMixin:
             scope = "悬赏和奸商" if merchant_open else "悬赏"
             self.important_summary_text.value = f"当前没有需要关注的{scope}结果"
             self.important_summary_text.color = COLORS["muted"]
+            self.important_summary_text.visible = True
+            if hasattr(self, "important_results_chips"):
+                self.important_results_chips.controls.clear()
         self.important_filter_button.content = (
             "显示全部" if self.show_important_only else "只看有结果"
         )
@@ -304,18 +638,19 @@ class DailyPageMixin:
     def _apply_task_visibility(self) -> None:
         hide_unavailable = bool(self.hide_unavailable_tasks.value)
         for card in self.cards.values():
-            card.control.visible = self.single_task_mode or (
-                not self.show_important_only or bool(card.important_result_labels())
-            )
-            for task_name, task_view in card.task_views.items():
-                merchant_closed = (
-                    task_name == controller.MERCHANT_TASK
-                    and task_view.status == "unavailable"
-                )
-                task_view.control.visible = not merchant_closed and not (
+            for task_view in card.task_views.values():
+                task_view.control.visible = not (
                     hide_unavailable
                     and task_view.status in {"unavailable", "disabled"}
                 )
+            has_visible_tasks = any(
+                task_view.control.visible for task_view in card.task_views.values()
+            )
+            card.task_grid.visible = has_visible_tasks
+            card.task_divider.visible = has_visible_tasks
+            card.control.visible = self.single_task_mode or (
+                not self.show_important_only or bool(card.important_result_labels())
+            )
 
 
     def _on_hide_unavailable_changed(self, _event: Any = None) -> None:
@@ -336,7 +671,7 @@ class DailyPageMixin:
         selected = list(self.task_mode_selector.selected)
         self.task_mode = selected[0] if selected else controller.DAILY_MODE
         self.single_task_name = None
-        self._refresh_single_task_options()
+        self.single_task_selector.value = None
         self.start_button.disabled = self.single_task_mode
         if self.task_mode == controller.WEEKLY_MODE:
             self.show_important_only = False
@@ -346,12 +681,32 @@ class DailyPageMixin:
         self._safe_update()
 
 
-    def _refresh_single_task_options(self) -> None:
-        task_names = (
-            WEEKLY_UI_TASK_ORDER
-            if self.task_mode == controller.WEEKLY_MODE
-            else UI_TASK_ORDER
-        )
+    def _refresh_single_task_options(
+        self,
+        daily_state: dict[str, Any],
+        now: datetime,
+    ) -> None:
+        systems = [
+            system_state
+            for account_state in daily_state["accounts"].values()
+            for system_state in account_state["systems"].values()
+        ]
+        if self.task_mode == controller.WEEKLY_MODE:
+            task_names = WEEKLY_UI_TASK_ORDER if systems else ()
+        else:
+            task_names = [
+                task_name
+                for task_name in UI_TASK_ORDER
+                if controller.task_is_available(task_name, now)
+                and any(
+                    controller.combined_task_is_enabled(system_state, task_name)
+                    for system_state in systems
+                )
+            ]
+        if self.single_task_name not in task_names:
+            self.single_task_name = None
+            if self.single_task_mode and not self.running:
+                self.start_button.disabled = True
         self.single_task_selector.options = [
             ft.DropdownOption(
                 key=task_name,
@@ -360,6 +715,10 @@ class DailyPageMixin:
             for task_name in task_names
         ]
         self.single_task_selector.value = self.single_task_name
+        self.single_task_selector.disabled = self.running or not task_names
+        self.single_task_selector.hint_text = (
+            "请选择任务" if task_names else "当前无可选任务"
+        )
 
 
     def _set_single_task_mode(
@@ -376,7 +735,7 @@ class DailyPageMixin:
         self.single_task_name = None
         self.single_task_mode_switch.value = enabled
         self.single_task_selector_panel.visible = enabled
-        self._refresh_single_task_options()
+        self.single_task_selector.value = None
         self.start_button.disabled = enabled
         if refresh_cards:
             self.refresh_cards(update=False)
@@ -496,11 +855,20 @@ class DailyPageMixin:
 
 
     async def _schedule_pump(self) -> None:
-        """在应用存活期间触发一次内存闹钟，触发后立即清除。"""
+        """检查任务开放时间并触发一次内存闹钟。"""
         await asyncio.sleep(1)
         while True:
             try:
                 now = datetime.now().astimezone()
+                availability = _task_availability(now)
+                if (
+                    getattr(self, "task_mode", None) == controller.DAILY_MODE
+                    and not self.running
+                    and getattr(self, "_last_task_availability", None) is not None
+                    and availability != self._last_task_availability
+                ):
+                    self._last_task_availability = availability
+                    self.refresh_cards()
                 scheduled_at = self._scheduled_run_at
                 if scheduled_at is None or now < scheduled_at:
                     await asyncio.sleep(5)
@@ -547,12 +915,7 @@ class DailyPageMixin:
             return
         if single_task is False and self.single_task_mode:
             self._set_single_task_mode(False, update=False, log=False)
-        selected_task = (
-            self.single_task_name
-            if single_task is not False and self.single_task_mode
-            else None
-        )
-        if self.single_task_mode and selected_task is None:
+        if self.single_task_mode and self.single_task_name is None:
             self.append_log("WARN", "请先选择一个任务")
             return
         if self.tool_running:
@@ -562,6 +925,14 @@ class DailyPageMixin:
             self._show_section("settings")
             return
         if not self.refresh_cards():
+            return
+        selected_task = (
+            self.single_task_name
+            if single_task is not False and self.single_task_mode
+            else None
+        )
+        if self.single_task_mode and selected_task is None:
+            self.append_log("WARN", "请先选择一个任务")
             return
         self.stop_event.clear()
         self.running = True
@@ -750,7 +1121,5 @@ class DailyPageMixin:
             self._append_log_now("ERROR", message)
         elif event_type == "controller_stopped" and card is not None:
             card.set_phase("warning", "已安全停止")
-        if card is not None:
-            card.refresh_key_results()
         self._apply_task_visibility()
         self._refresh_task_summary()

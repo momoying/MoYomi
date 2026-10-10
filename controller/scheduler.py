@@ -417,6 +417,64 @@ def merchant_task_was_globally_skipped(
     )
 
 
+def set_manual_detection_result(
+    state: dict[str, Any],
+    account: str,
+    system: str,
+    task_name: str,
+    result: Optional[str],
+    now: datetime,
+    *,
+    region: str = SAME_REGION,
+) -> None:
+    """人工记录一次检测，或清除记录以便本周期重新检测。"""
+    allowed = {
+        BOUNTY_TASK: BOUNTY_RESULT_DETAILS,
+        MERCHANT_TASK: MERCHANT_RESULT_DETAILS,
+    }
+    if task_name not in allowed or (
+        result is not None
+        and (result not in allowed[task_name] or result == MERCHANT_SKIPPED_RESULT)
+    ):
+        raise ValueError("不支持的检测结果")
+    if region not in VALID_REGIONS or (task_name == MERCHANT_TASK and region != SAME_REGION):
+        raise ValueError("不支持的检测区服")
+
+    system_state = state["accounts"][account]["systems"][system]
+    previous_result = task_record_result(system_state, task_name, region)
+    if result is None:
+        set_task_record_result(system_state, task_name, None, region)
+        record = (
+            system_state[task_name][REGION_STATE_KEYS[region]]
+            if task_name == BOUNTY_TASK
+            else system_state[task_name]
+        )
+        record["time"] = None
+    else:
+        record_task_completion(task_name, system_state, now, region=region)
+        set_task_record_result(system_state, task_name, result, region)
+
+    if task_name != MERCHANT_TASK:
+        return
+    if result == MERCHANT_STOP_RESULT:
+        mark_remaining_merchant_tasks_skipped(state, now)
+    elif previous_result == MERCHANT_STOP_RESULT:
+        all_systems = [
+            item
+            for account_state in state["accounts"].values()
+            for item in account_state["systems"].values()
+        ]
+        if not any(
+            task_record_result(item, MERCHANT_TASK) == MERCHANT_STOP_RESULT
+            and not task_is_due(MERCHANT_TASK, item, now)
+            for item in all_systems
+        ):
+            for item in all_systems:
+                if merchant_task_was_globally_skipped(item, now):
+                    set_task_record_result(item, MERCHANT_TASK, None)
+                    item[MERCHANT_TASK]["time"] = None
+
+
 def _ordered_due_tasks(
     system_state: dict[str, Any],
     now: datetime,
