@@ -46,6 +46,7 @@ def _empty_system_state() -> dict[str, Any]:
         HEART_TEAM_TASK: {
             "role": None,
             "completed_at": None,
+            "reserve_warning": None,
             "battle_date": None,
             "battles_completed": 0,
             "battle_target": 0,
@@ -331,9 +332,15 @@ def _normalize_system_state(raw: Any) -> dict[str, Any]:
     }
     raw_heart = raw.get(HEART_TEAM_TASK)
     raw_heart_record = raw_heart if isinstance(raw_heart, dict) else {}
+    reserve_warning = raw_heart_record.get("reserve_warning")
     state[HEART_TEAM_TASK] = {
         "role": heart_team_role(raw),
         "completed_at": task_record_time(raw, HEART_TEAM_TASK),
+        "reserve_warning": (
+            reserve_warning.strip()
+            if isinstance(reserve_warning, str) and reserve_warning.strip()
+            else None
+        ),
         "battle_date": _normalize_battle_date(
             raw_heart_record.get("battle_date")
         ),

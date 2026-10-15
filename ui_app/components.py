@@ -78,6 +78,7 @@ class AccountCardView:
                 )
                 available = controller.task_is_available(task_name, now)
             completed_detail = None
+            completed_warning = None
             if task_name == controller.BOUNTY_TASK:
                 completed_detail = controller.combined_bounty_detail(system_state)
             elif task_name == controller.MERCHANT_TASK:
@@ -102,6 +103,10 @@ class AccountCardView:
                         else "今日战斗已完成"
                     )
                 )
+                if role == "member":
+                    completed_warning = system_state[task_name].get("reserve_warning")
+                    if completed_warning:
+                        completed_detail = completed_warning
             elif task_name == controller.CONSIGNMENT_HOUSE_TASK:
                 completed_detail = (
                     "本周购买完成"
@@ -124,6 +129,14 @@ class AccountCardView:
                     else None
                 ),
             )
+            if task_name == controller.COOP_REWARD_TASK and task_view.status == "pending":
+                completed, target = controller.battle_progress(system_state, task_name, now)
+                task_view.set_status(
+                    "pending",
+                    f"待打 {target - completed} 场" if target else "待挑战",
+                )
+            if task_view.status == "done" and completed_warning:
+                task_view.set_status("warning", completed_warning)
             if task_name == controller.BOUNTY_TASK:
                 bounty_style = BOUNTY_HIGHLIGHT_STYLES.get(
                     controller.combined_bounty_highlight_result(system_state)
@@ -261,6 +274,8 @@ class AccountCardView:
             self.set_phase("error", "执行失败")
         elif "active" in task_statuses:
             self.set_phase("active", "正在执行")
+        elif "warning" in task_statuses:
+            self.set_phase("warning", "已完成，部分结果需关注")
         elif task_statuses and task_statuses <= {"done"}:
             self.set_phase("done", "当前任务全部完成")
         elif task_statuses <= {"unavailable", "disabled"}:
@@ -299,6 +314,8 @@ class TaskStatusView:
             overflow=ft.TextOverflow.ELLIPSIS,
         )
         detail = "待执行" + (f" ×{due_count}" if due_count > 1 else "")
+        if task_name == controller.COOP_REWARD_TASK:
+            detail = "待挑战"
         if not enabled:
             detail = "已禁用"
         elif not available:
@@ -306,7 +323,10 @@ class TaskStatusView:
         self.detail = ft.Text(
             detail
             if (due_count or not available or not enabled)
-            else (completed_detail or "当前周期已完成"),
+            else (
+                completed_detail
+                or ("已完成" if task_name == controller.COOP_REWARD_TASK else "当前周期已完成")
+            ),
             size=10,
             color=COLORS["muted"],
             max_lines=1,

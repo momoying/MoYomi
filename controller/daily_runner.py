@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, Optional
@@ -14,12 +15,14 @@ from controller.state_store import *
 from controller.scheduler import *
 from controller.task_services import (
     _invoke_task_runner,
+    _invoke_account_action,
     _run_task_recovery,
     _services_from_runtime_settings,
 )
 from controller.weekly_runner import run_weekly
 from module.diagnostics import capture_error_screenshot
 from module.notifications import maybe_send_detection_summary
+from module.task_execution import run_task_call
 
 
 def run(
@@ -126,7 +129,12 @@ def run(
         first_item = work_queue[0]
         recovery_screenshot = None
         try:
-            recovery_result = services.startup_recovery()
+            recovery_result, report = run_task_call(services.startup_recovery, stop_event=stop_event, finish_current=True)
+            if report.cancelled:
+                _emit_event(event_callback, "controller_stopped")
+                return False
+            if report.exception:
+                raise report.exception
             recovery_success = bool(
                 getattr(recovery_result, "success", recovery_result)
             )
@@ -139,7 +147,11 @@ def run(
             recovery_message = f"启动界面恢复发生异常：{exc}"
         if not recovery_success:
             if not recovery_screenshot:
-                capture_error_screenshot("startup_recovery", "failed")
+                frame = getattr(recovery_result, "frame", None) if report.exception is None else report.frame
+                if frame is None:
+                    frame = report.frame
+                capture_error_screenshot("startup_recovery", report.stage or "failed",
+                                         **({"frame": frame} if frame is not None else {}))
             print(f"[ERROR] {recovery_message}")
             _emit_event(
                 event_callback,
@@ -208,17 +220,27 @@ def run(
         )
         if first_login:
             # 中控默认从登录页启动；若该账号已经选中，Switch 不会展开列表。
-            selected = services.select_account(account_name, False)
+            account_outcome = _invoke_account_action(
+                services.select_account, account_name, False, stop_event=stop_event,
+            )
         elif previous_account != account_name:
-            selected = services.select_account(account_name, True)
+            account_outcome = _invoke_account_action(
+                services.select_account, account_name, True, stop_event=stop_event,
+            )
         else:
             # 同一账号的第二系统：退出后沿用当前账号，无需重复选择账号。
-            selected = account_name if services.exit_to_login() else None
+            account_outcome = _invoke_account_action(services.exit_to_login, stop_event=stop_event)
+
+        selected = (account_outcome.result or account_name) if account_outcome.completed else None
 
         if selected is None:
-            message = f"无法选中账号 {account_name}"
+            if account_outcome.failure_kind == "cancelled":
+                _emit_event(event_callback, "controller_stopped")
+                return False
+            message = f"无法选中账号 {account_name}；{account_outcome.stage or '账号切换'}：{account_outcome.reason or '执行失败'}"
             if not (stop_event is not None and stop_event.is_set()):
-                capture_error_screenshot("account_switch", "select_failed")
+                capture_error_screenshot("account_switch", account_outcome.stage or "select_failed",
+                                         **({"frame": account_outcome.frame} if account_outcome.frame is not None else {}))
             print(f"[ERROR] {message}")
             _emit_event(
                 event_callback,
@@ -229,6 +251,9 @@ def run(
                 message=message,
             )
             return False
+        if stop_event is not None and stop_event.is_set():
+            _emit_event(event_callback, "controller_stopped")
+            return False
         _emit_event(
             event_callback,
             "account_phase",
@@ -236,12 +261,18 @@ def run(
             system=system,
             phase="sign_in",
         )
-        if not services.sign_in(system, region):
+        login_outcome = _invoke_account_action(services.sign_in, system, region, stop_event=stop_event)
+        if not login_outcome.completed:
+            if login_outcome.failure_kind == "cancelled":
+                _emit_event(event_callback, "controller_stopped")
+                return False
             message = (
                 f"{account_name} / {system} / {REGION_LABELS[region]} 登录失败"
+                f"；{login_outcome.stage or '登录'}：{login_outcome.reason or '执行失败'}"
             )
             if not (stop_event is not None and stop_event.is_set()):
-                capture_error_screenshot("account_sign", "login_failed")
+                capture_error_screenshot("account_sign", login_outcome.stage or "login_failed",
+                                         **({"frame": login_outcome.frame} if login_outcome.frame is not None else {}))
             print(f"[ERROR] {message}")
             _emit_event(
                 event_callback,
@@ -339,7 +370,16 @@ def _execute_task(
                 target,
             )
             save_state(state, status_path)
-            print(f"同心队当前账号进度已保存：{completed}/{target} 场")
+            print(f"同心队完成 {completed}/{target} 场")
+            _emit_event(
+                event_callback,
+                "task_battle_progress",
+                account=account_name,
+                system=system,
+                task=HEART_TEAM_TASK,
+                completed=completed,
+                target=target,
+            )
 
         heart_progress_callback = save_heart_progress
     for run_index in range(1, run_count + 1):
@@ -358,8 +398,28 @@ def _execute_task(
             task=task_name,
             run_index=run_index,
             run_count=run_count,
+            **(
+                {"battle_index": coop_completed_before + run_index, "battle_target": coop_target}
+                if task_name == COOP_REWARD_TASK else {}
+            ),
         )
         failure_message = ""
+        coop_battle_recorded = False
+
+        def save_coop_progress() -> None:
+            nonlocal coop_battle_recorded
+            if coop_battle_recorded:
+                return
+            completed = coop_completed_before + run_index
+            set_battle_progress(system_state, COOP_REWARD_TASK, now_provider(), completed, coop_target)
+            save_state(state, status_path)
+            coop_battle_recorded = True
+            print(f"协战奖励完成 {completed}/{coop_target} 场")
+            _emit_event(
+                event_callback, "task_battle_progress", account=account_name, system=system,
+                task=COOP_REWARD_TASK, completed=completed, target=coop_target,
+            )
+
         max_attempts = max(1, services.task_recovery_retries + 1)
         for attempt_index in range(1, max_attempts + 1):
             failure_stage = "failed"
@@ -376,8 +436,11 @@ def _execute_task(
                     ),
                     completed_battles=heart_completed_before,
                     on_battle_completed=heart_progress_callback,
+                    on_coop_battle_completed=save_coop_progress if task_name == COOP_REWARD_TASK else None,
+                    stop_event=stop_event,
                 )
-                failure_message = f"{label}执行失败"
+                failure_stage = outcome.failure_kind or "failed"
+                failure_message = f"{label}/{outcome.stage or '执行'}：{outcome.reason or '执行失败'}"
             except KeyboardInterrupt:
                 raise
             except Exception as exc:
@@ -385,31 +448,37 @@ def _execute_task(
                 failure_message = f"{label}发生异常: {exc}"
                 failure_stage = "exception"
 
-            if not outcome.completed and not (
+            if coop_battle_recorded and not outcome.completed:
+                outcome = replace(
+                    outcome, completed=True, result=COOP_BATTLE_COMPLETED_RECOVERY_REQUIRED,
+                    recovery_reason="本场协战已结算并保存，但收尾未完成",
+                )
+
+            if not outcome.completed and (outcome.failure_kind == "cancelled" or (stop_event is not None and stop_event.is_set())):
+                _emit_event(event_callback, "controller_stopped")
+                return None
+
+            if (not outcome.completed or outcome.recovery_reason is not None) and not (
                 stop_event is not None and stop_event.is_set()
             ):
                 capture_error_screenshot(
                     task_name,
-                    failure_stage,
+                    outcome.stage or ("completion_cleanup_failed" if outcome.completed else failure_stage),
                     attempt=attempt_index,
+                    **({"frame": outcome.frame} if outcome.frame is not None else {}),
                 )
 
             if outcome.completed:
                 if task_name == COOP_REWARD_TASK:
                     coop_reenter_next = False
-                    completed = coop_completed_before + run_index
-                    set_battle_progress(
-                        system_state,
-                        COOP_REWARD_TASK,
-                        now_provider(),
-                        completed,
-                        coop_target,
-                    )
-                    save_state(state, status_path)
-                    print(
-                        f"协战奖励当前账号进度已保存："
-                        f"{completed}/{coop_target} 场"
-                    )
+                    # 兼容只返回完成结果的旧调用；新任务在收尾前已通过回调保存。
+                    save_coop_progress()
+
+                if stop_event is not None and stop_event.is_set():
+                    if run_index < run_count:
+                        _emit_event(event_callback, "controller_stopped")
+                        return None
+                    return outcome
 
                 if (
                     task_name == COOP_REWARD_TASK
@@ -503,6 +572,7 @@ def _execute_task(
                     task=task_name,
                     phase="task",
                     message=failure_message,
+                    task_stage=outcome.stage,
                 )
                 return None
 
@@ -593,6 +663,8 @@ def _save_task_result(
                 )
     elif task_name == "liked" and region == CROSS_REGION:
         detail = "跨区好友 ×2 已点赞"
+    elif task_name == HEART_TEAM_TASK:
+        system_state[HEART_TEAM_TASK]["reserve_warning"] = outcome.warning
     save_state(state, status_path)
     print(f"{label}完成时间已写入: {timestamp}")
     _emit_event(
@@ -609,6 +681,7 @@ def _save_task_result(
             if task_name == BOUNTY_TASK
             else task_result
         ),
+        warning=outcome.warning,
     )
 
 
@@ -621,10 +694,28 @@ def _recover_completed_task(
     stop_event: Any,
 ) -> bool:
     """完成状态已保存，只清理残留界面，绝不重跑已完成任务。"""
+    if stop_event is not None and stop_event.is_set():
+        _emit_event(event_callback, "controller_stopped")
+        return False
     account_name, system = work_item.account_name, work_item.system
     label = TASK_LABELS[task_name]
     cleanup_failure = outcome.recovery_reason
+    if cleanup_failure is not None and outcome.stage:
+        cleanup_failure = f"{outcome.stage}：{outcome.reason or cleanup_failure}"
     if cleanup_failure is not None:
+        if task_name == HEART_TEAM_TASK:
+            message = f"{cleanup_failure}；已保存战斗进度和完成时间，停止后续任务"
+            print(f"[ERROR] {message}")
+            _emit_event(
+                event_callback,
+                "error",
+                account=account_name,
+                system=system,
+                task=task_name,
+                phase="task_completion_cleanup",
+                message=message,
+            )
+            return False
         print(
             f"[ERROR] {cleanup_failure}；完成时间已经写入，"
             "不会重复挑战，开始执行任务专属恢复"

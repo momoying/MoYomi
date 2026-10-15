@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 import builtins
+import os
 import re
 import threading
 import time
 from datetime import datetime
 from typing import Optional, Tuple
+
+from module.task_execution import current_stage, in_task_call, report_failure, set_stage
 
 
 Rect = Tuple[int, int, int, int]
@@ -17,28 +20,10 @@ _PRINT_LOCK = threading.Lock()
 class TaskLogger:
     """为任务状态、识图和点击输出提供统一且可实时刷新的格式。"""
 
-    _STAGE_HINTS = (
-        ("登录", "登录"),
-        ("账号", "账号切换"),
-        ("队伍", "寻找队伍"),
-        ("加入", "加入队伍"),
-        ("刷新", "刷新列表"),
-        ("准备", "准备战斗"),
-        ("战斗", "战斗结算"),
-        ("奖励", "领取奖励"),
-        ("返回", "返回界面"),
-        ("退出", "退出界面"),
-        ("点赞", "好友点赞"),
-        ("协战", "协战奖励"),
-        ("悬赏", "悬赏检测"),
-        ("奸商", "奸商检测"),
-        ("商店", "奸商检测"),
-        ("麒麟", "寮麒麟"),
-        ("一键", "一键日常"),
-        ("截图", "截图"),
-        ("OCR", "OCR识别"),
-    )
     _STAGE_NAMES = {
+        "准备御魂十层": "御魂十层",
+        "发起协战挑战": "挑战",
+        "战斗及奖励结算": "结算",
         "main": "庭院首页",
         "menu_scroll": "展开功能栏",
         "team": "进入组队",
@@ -77,13 +62,15 @@ class TaskLogger:
         "shop_back": "退出热门推荐",
         "merchant_entry": "进入神秘商店",
         "blue_ticket": "检测蓝票",
-        "confirm": "确认刷新",
+        "confirm": "确认",
     }
 
     def __init__(self, task: str, *, match_repeat_seconds: float = 3.0):
         self.task = task
         self.match_repeat_seconds = max(0.0, float(match_repeat_seconds))
         self._last_matches: dict[tuple[str, str, Rect], float] = {}
+        self._business_stage: Optional[str] = None
+        self.debug_enabled = os.getenv("MOYOMI_LOG_LEVEL", "INFO").upper() == "DEBUG"
 
     @staticmethod
     def _timestamp() -> str:
@@ -96,13 +83,31 @@ class TaskLogger:
         return f"({rect[0]}, {rect[1]}, {rect[2]}, {rect[3]})"
 
     def _emit(self, level: str, stage: str, message: str, *, end: str = "\n") -> None:
+        if level == "DEBUG" and not self.debug_enabled:
+            return
+        business_stage = current_stage() if in_task_call() else self._business_stage
+        stage = business_stage or stage
         stage = self._STAGE_NAMES.get(stage, stage)
-        line = f"{self._timestamp()} [{level}] [{self.task}/{stage}] {message}"
+        if level == "ERROR":
+            report_failure(message)
+        context = self.task if stage in ("", "运行", self.task) else f"{self.task}/{stage}"
+        line = f"{self._timestamp()} [{level}] [{context}] {message}"
         with _PRINT_LOCK:
             builtins.print(line, end=end, flush=True)
 
     def info(self, stage: str, message: str) -> None:
         self._emit("INFO", stage, message)
+
+    def debug(self, stage: str, message: str) -> None:
+        self._emit("DEBUG", stage, message)
+
+    def set_stage(self, stage: str) -> None:
+        """记录业务阶段用于失败定位，不额外输出阶段开始日志。"""
+        previous = current_stage() if in_task_call() else self._business_stage
+        if previous == stage:
+            return
+        self._business_stage = stage
+        set_stage(stage)
 
     def warning(self, stage: str, message: str) -> None:
         self._emit("WARN", stage, message)
@@ -113,12 +118,15 @@ class TaskLogger:
     @staticmethod
     def _classify(message: str) -> tuple[str, str]:
         level = "INFO"
-        if re.search(r"\[?ERROR\]?|错误|异常|未能", message, re.IGNORECASE):
+        explicit = re.match(r"^\[(ERROR|WARN(?:ING)?|INFO|DEBUG)\]", message, re.IGNORECASE)
+        if explicit:
+            level = "WARN" if explicit[1].upper().startswith("WARN") else explicit[1].upper()
+        elif re.search(r"\[?ERROR\]?|错误|异常|未能", message, re.IGNORECASE):
             level = "ERROR"
         elif re.search(r"\[?WARN(?:ING)?\]?|警告", message, re.IGNORECASE):
             level = "WARN"
         cleaned = re.sub(
-            r"^\[(?:ERROR|WARN(?:ING)?|INFO)\]\s*",
+            r"^\[(?:ERROR|WARN(?:ING)?|INFO|DEBUG)\]\s*",
             "",
             message,
             flags=re.IGNORECASE,
@@ -139,7 +147,9 @@ class TaskLogger:
         *,
         search_region: Optional[Rect] = None,
     ) -> None:
-        """记录成功识图；相同模板和区域短时间内只输出一次。"""
+        """仅调试模式记录成功识图；相同模板和区域短时间内只输出一次。"""
+        if not self.debug_enabled:
+            return
         key = (stage, template, click_region)
         now = time.monotonic()
         last = self._last_matches.get(key)
@@ -150,7 +160,7 @@ class TaskLogger:
         if search_region is not None:
             extra = f" | 搜索区域={self._rect(search_region)}"
         self._emit(
-            "VISION",
+            "DEBUG",
             stage,
             "识图"
             f" | 模板={template}"
@@ -167,18 +177,10 @@ class TaskLogger:
         click_region: Rect,
         point: tuple[int, int],
     ) -> None:
-        self._emit(
-            "ACTION",
-            stage,
-            f"点击 | 目标={label} | 点击区域={self._rect(click_region)}"
-            f" | 落点=({point[0]}, {point[1]})",
-        )
-
-    def _infer_stage(self, message: str) -> str:
-        for token, stage in self._STAGE_HINTS:
-            if token in message:
-                return stage
-        return "运行"
+        message = f"点击 {label} ({point[0]}, {point[1]})"
+        if self.debug_enabled:
+            message += f" | 区域={self._rect(click_region)}"
+        self._emit("ACTION", stage, message)
 
     def legacy_print(self, *values, sep=" ", end="\n", file=None, flush=False) -> None:
         """兼容原有 print 调用，并统一时间、等级、任务与阶段前缀。"""
@@ -187,4 +189,4 @@ class TaskLogger:
             return
         message = sep.join(str(value) for value in values)
         level, message = self._classify(message)
-        self._emit(level, self._infer_stage(message), message, end=end)
+        self._emit(level, "", message, end=end)

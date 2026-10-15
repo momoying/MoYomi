@@ -213,25 +213,34 @@ def _claim_mail() -> bool:
     # 点击后按钮会变灰，灰色按钮不再参与后续状态判断。
     _click_rect(claim_rect, "一键领取")
 
+    LOGGER.set_stage("确认领取")
+    confirm_deadline = time.monotonic() + CONFIRM_WAIT_SECONDS
     _, _, confirm_rect, score = _wait_for_any(("confirm",), CONFIRM_WAIT_SECONDS)
-    if confirm_rect is None:
+    remaining = confirm_deadline - time.monotonic()
+    if confirm_rect is None or remaining <= 0:
         return False
     LOGGER.info("领取确认", f"识别到确定按钮，匹配分数 {score:.3f}")
     if not _click_until_disappears(
         "confirm",
         "领取确认",
         confirm_rect,
-        ACTION_CONFIRM_SECONDS,
+        min(ACTION_CONFIRM_SECONDS, remaining),
         still_visible_delay=CONFIRM_RETRY_SECONDS,
     ):
         return False
 
     LOGGER.info("领取奖励", "领取处理中，等待获得奖励界面")
+    LOGGER.set_stage("领取奖励")
+    reward_deadline = time.monotonic() + REWARD_WAIT_SECONDS
     _, _, reward_rect, score = _wait_for_any(("reward",), REWARD_WAIT_SECONDS)
-    if reward_rect is None:
+    remaining = reward_deadline - time.monotonic()
+    if reward_rect is None or remaining <= 0:
         return False
     LOGGER.info("领取奖励", f"识别到获得奖励，匹配分数 {score:.3f}")
-    time.sleep(REWARD_READY_SECONDS)
+    time.sleep(min(REWARD_READY_SECONDS, remaining))
+    remaining = reward_deadline - time.monotonic()
+    if remaining <= 0:
+        return False
 
     def click_random_side(_current_rect: Rect) -> None:
         side, region = random.choice(tuple(REWARD_BLANK_AREAS.items()))
@@ -244,7 +253,7 @@ def _claim_mail() -> bool:
         TEMPLATES["reward"],
         reward_rect,
         threshold=MATCH_THRESHOLDS["reward"],
-        timeout=ACTION_CONFIRM_SECONDS,
+        timeout=min(ACTION_CONFIRM_SECONDS, remaining),
         label="获得奖励",
         click_callback=click_random_side,
         still_visible_delay=REWARD_RETRY_SECONDS,
@@ -255,11 +264,16 @@ def _claim_mail() -> bool:
 
 
 def _close_mailbox() -> bool:
+    LOGGER.set_stage("退出邮箱")
+    deadline = time.monotonic() + MAIL_PAGE_WAIT_SECONDS
     _, _, close_rect, score = _wait_for_any(("close",), MAIL_PAGE_WAIT_SECONDS)
-    if close_rect is None:
+    remaining = deadline - time.monotonic()
+    if close_rect is None or remaining <= 0:
         return False
     LOGGER.info("退出邮箱", f"识别到邮箱关闭按钮，匹配分数 {score:.3f}")
-    if not _click_until_disappears("close", "退出邮箱", close_rect):
+    if not _click_until_disappears(
+        "close", "退出邮箱", close_rect, min(ACTION_CONFIRM_SECONDS, remaining),
+    ):
         return False
     _, name, _, _ = _wait_for_any(("main",), RETURN_WAIT_SECONDS)
     return name == "main"
@@ -271,6 +285,7 @@ def recover_to_courtyard(
     fallback: Optional[Callable[[Any], Any]] = None,
 ) -> Any:
     """先取消邮件插画启用弹窗，再交给通用恢复逐层返回庭院。"""
+    LOGGER.set_stage("邮件专属恢复")
     deadline = time.monotonic() + ILLUSTRATION_RECOVERY_SECONDS
     cancel_clicks = 0
     while time.monotonic() < deadline:
@@ -300,10 +315,12 @@ def recover_to_courtyard(
 
 def run() -> bool:
     """检查邮箱红点 → 按需进入并领取 → 关闭邮箱返回庭院。"""
+    LOGGER.set_stage("检查邮箱")
     utils.connect_to_mumu()
     LOGGER.info("启动", "开始领取邮件任务")
 
     # 1. 无红点属于正常完成；识别不到邮箱不能当成无邮件。
+    entry_deadline = time.monotonic() + MAIN_WAIT_SECONDS
     mail_state, mail_rect = _wait_for_mail_state()
     if mail_state is None or mail_rect is None:
         return False
@@ -312,9 +329,14 @@ def run() -> bool:
         return True
 
     LOGGER.info("邮件检查", "检测到邮箱红点，进入邮箱领取附件")
+    LOGGER.set_stage("进入邮箱")
     # 2. 打开未读邮箱并处理领取弹窗。
-    if not _click_until_disappears("mail_unread", "进入邮箱", mail_rect):
+    remaining = entry_deadline - time.monotonic()
+    if remaining <= 0 or not _click_until_disappears(
+        "mail_unread", "进入邮箱", mail_rect, min(ACTION_CONFIRM_SECONDS, remaining),
+    ):
         return False
+    LOGGER.set_stage("领取附件")
     if not _claim_mail():
         return False
     # 3. 关闭邮箱并确认庭院，避免下一任务从邮件页开始。

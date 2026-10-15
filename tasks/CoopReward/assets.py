@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from module.assets import CommonUIAssets
 from module.base.assets import ClickAsset, ImageAsset, TaskAssets
 
 
@@ -57,7 +58,7 @@ class CoopRewardAssets(TaskAssets):
 
     # 已锁定阵容标记
     I_FORMATION_LOCKED = ImageAsset(
-        file=RES_DIR / "formation_locked.png",
+        file=CommonUIAssets.I_FORMATION_LOCKED.file,
         region=((690, 650), (735, 695)),
         threshold=0.88,
         name='formation_locked',
@@ -65,7 +66,7 @@ class CoopRewardAssets(TaskAssets):
 
     # 未锁定阵容标记
     I_FORMATION_UNLOCKED = ImageAsset(
-        file=RES_DIR / "formation_unlocked.png",
+        file=CommonUIAssets.I_FORMATION_UNLOCKED.file,
         region=((690, 650), (735, 695)),
         threshold=0.85,
         name='formation_unlocked',
@@ -105,7 +106,7 @@ class CoopRewardAssets(TaskAssets):
 
     # 胜利过渡界面
     I_VICTORY_TRANSITION = ImageAsset(
-        file=RES_DIR / "victory_transition.png",
+        file=CommonUIAssets.I_VICTORY_TRANSITION.file,
         region=((180, 40), (1080, 420)),
         threshold=0.9,
         name='victory_transition',
@@ -137,7 +138,7 @@ class CoopRewardAssets(TaskAssets):
 
     # 一键返回庭院按钮
     I_COURTYARD_BACK = ImageAsset(
-        file=RES_DIR / "courtyard_back.png",
+        file=CommonUIAssets.I_COURTYARD_BACK.file,
         region=((60, 0), (180, 100)),
         threshold=0.9,
         name='courtyard_back',

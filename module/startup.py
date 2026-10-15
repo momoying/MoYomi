@@ -5,7 +5,7 @@ from __future__ import annotations
 import random
 import sys
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Optional, Tuple
 
@@ -22,6 +22,7 @@ from module.base.device import TaskDevice
 from module.assets import StartupAssets, StartupMatchSpec as MatchSpec
 from module.diagnostics import capture_error_screenshot
 from module.logging import TaskLogger
+from module.task_execution import in_task_call, report_failure
 
 
 ASSETS = StartupAssets
@@ -54,6 +55,7 @@ class RecoveryResult:
     blocked: bool
     reason: str
     screenshot: Optional[str] = None
+    frame: object = field(default=None, repr=False, compare=False)
 
 
 
@@ -141,6 +143,9 @@ def _click_reward_blank_and_confirm(rect: Rect) -> bool:
 
 
 def _save_screenshot(stage: str, frame=None) -> Optional[str]:
+    if in_task_call():
+        report_failure(frame=frame)
+        return None
     return capture_error_screenshot("startup_recovery", stage, frame=frame)
 
 
@@ -149,7 +154,7 @@ def _blocked(reason: str, frame=None, stage: str = "blocked") -> RecoveryResult:
     detail = f"；现场截图：{screenshot}" if screenshot else ""
     message = f"启动恢复已停止：{reason}，请人工处理{detail}"
     print(f"[ERROR] {message}")
-    return RecoveryResult(False, True, message, screenshot)
+    return RecoveryResult(False, True, message, screenshot, frame)
 
 
 def _wait_for_known_frame(
@@ -188,6 +193,7 @@ def recover_to_login(
     collect_coop_battle_rewards: Optional[Callable[[object], bool]] = None,
 ) -> RecoveryResult:
     """识别当前页面并安全退回登录页；战斗或未知页面立即阻塞。"""
+    LOGGER.set_stage("启动界面恢复")
     utils.connect_to_mumu()
     deadline = time.monotonic() + RECOVERY_TIMEOUT_SECONDS
     steps = 0

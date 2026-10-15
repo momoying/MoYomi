@@ -3,6 +3,8 @@ from __future__ import annotations
 import asyncio
 import queue
 import unittest
+import threading
+from unittest.mock import Mock
 from types import SimpleNamespace
 
 import ui
@@ -77,6 +79,23 @@ class UiLogPumpTests(unittest.IsolatedAsyncioTestCase):
 
 
 class UiWorkerFinishedTests(unittest.TestCase):
+    def test_stop_request_keeps_ui_running_until_current_call_finishes(self):
+        card = SimpleNamespace(set_phase=Mock())
+        logs = []
+        dashboard = SimpleNamespace(
+            running=True, stop_event=threading.Event(), current_key=("account", "IOS"),
+            cards={("account", "IOS"): card}, start_button=SimpleNamespace(disabled=False, content="停止"),
+            append_log=lambda level, message: logs.append((level, message)), _safe_update=Mock(),
+        )
+        ui.AssistantDashboard.request_stop(dashboard)
+        self.assertTrue(dashboard.running)
+        self.assertTrue(dashboard.stop_event.is_set())
+        self.assertTrue(dashboard.start_button.disabled)
+        self.assertEqual(dashboard.start_button.content, "停止中")
+        card.set_phase.assert_called_once_with("warning", "等待当前登录或任务完成")
+        self.assertTrue(any("等待当前登录或任务执行结束" in message for _, message in logs))
+        self.assertFalse(any("已安全停止" in message for _, message in logs))
+
     def test_failure_rebuilds_cards_and_clears_transient_current_task(self) -> None:
         dashboard = ui.AssistantDashboard.__new__(ui.AssistantDashboard)
         dashboard.running = True
@@ -107,6 +126,19 @@ class UiWorkerFinishedTests(unittest.TestCase):
         self.assertEqual(refreshes, [False])
         self.assertEqual(disabled_states, [False])
         self.assertTrue(any(level == "ERROR" and "界面已复位" in msg for level, msg in logs))
+
+
+class UiLogRenderingTests(unittest.TestCase):
+    def test_debug_lines_are_not_wrapped_with_another_timestamp(self):
+        dashboard = SimpleNamespace(
+            settings={}, log_view=SimpleNamespace(controls=[]),
+            tool_log_view=SimpleNamespace(controls=[]), tool_log_sequence=0,
+        )
+        message = "00:33:47 [DEBUG] [协战奖励/挑战] 匹配分数 0.990"
+        ui.AssistantDashboard._append_log_now(dashboard, "INFO", message)
+        ui.AssistantDashboard._append_tool_log_now(dashboard, "INFO", message)
+        self.assertEqual(dashboard.log_view.controls[0].value, message)
+        self.assertEqual(dashboard.tool_log_view.controls[0].value, message)
 
 
 if __name__ == "__main__":

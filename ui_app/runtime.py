@@ -89,7 +89,7 @@ class UiRuntimeMixin:
     def _append_log_now(self, level: str, message: str) -> None:
         """仅由页面事件循环调用。"""
         standardized = re.match(
-            r"^\d{2}:\d{2}:\d{2} \[(INFO|WARN|ERROR|SUCCESS|VISION|ACTION)\] ",
+            r"^\d{2}:\d{2}:\d{2} \[(INFO|WARN|ERROR|SUCCESS|VISION|ACTION|DEBUG)\] ",
             message,
         )
         if standardized:
@@ -106,7 +106,7 @@ class UiRuntimeMixin:
         rendered = message
         if not standardized:
             timestamp = datetime.now().strftime("%H:%M:%S")
-            rendered = f"{timestamp} [{level}] [UI/运行] {message}"
+            rendered = f"{timestamp} [{level}] [UI] {message}"
         self.log_view.controls.append(
             ft.Text(
                 rendered,
@@ -128,14 +128,14 @@ class UiRuntimeMixin:
 
     def _append_tool_log_now(self, level: str, message: str) -> None:
         standardized = re.match(
-            r"^\d{2}:\d{2}:\d{2} \[(INFO|WARN|ERROR|SUCCESS|VISION|ACTION)\] ",
+            r"^\d{2}:\d{2}:\d{2} \[(INFO|WARN|ERROR|SUCCESS|VISION|ACTION|DEBUG)\] ",
             message,
         )
         if standardized:
             level = standardized.group(1)
         else:
             inline_level = re.match(
-                r"^\[(INFO|WARN|ERROR|SUCCESS|VISION|ACTION)\]\s*(.*)$",
+                r"^\[(INFO|WARN|ERROR|SUCCESS|VISION|ACTION|DEBUG)\]\s*(.*)$",
                 message,
                 flags=re.DOTALL,
             )
@@ -155,7 +155,7 @@ class UiRuntimeMixin:
         logged_at = datetime.now()
         if not standardized:
             timestamp = logged_at.strftime("%H:%M:%S")
-            rendered = f"{timestamp} [{level}] [小工具/运行] {message}"
+            rendered = f"{timestamp} [{level}] [小工具] {message}"
         else:
             parsed_time = datetime.strptime(message[:8], "%H:%M:%S").time()
             logged_at = datetime.combine(logged_at.date(), parsed_time)

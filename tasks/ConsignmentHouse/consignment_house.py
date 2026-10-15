@@ -183,7 +183,9 @@ def _ensure_store_menu_expanded() -> bool:
         if scroll_score is not None and (best_scroll is None or scroll_score > best_scroll):
             best_scroll = scroll_score
         if scroll_rect is not None:
-            remaining = max(0.1, deadline - time.monotonic())
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
             if not _click_and_wait_disappear(
                 "menu_scroll",
                 "展开功能栏卷轴",
@@ -383,10 +385,12 @@ def _click_reward_blank() -> None:
 
 
 def _dismiss_reward() -> bool:
+    deadline = time.monotonic() + REWARD_WAIT_SECONDS
     _, reward_rect, _ = _wait_for_template(
         "reward", "获得奖励", REWARD_WAIT_SECONDS
     )
-    if reward_rect is None:
+    remaining = deadline - time.monotonic()
+    if reward_rect is None or remaining <= 0:
         return False
     top_left, bottom_right = REGIONS["reward"]
     return DEVICE.click_until_disappears(
@@ -395,7 +399,7 @@ def _dismiss_reward() -> bool:
         TEMPLATES["reward"],
         reward_rect,
         threshold=MATCH_THRESHOLDS["reward"],
-        timeout=REWARD_WAIT_SECONDS,
+        timeout=remaining,
         label="关闭获得奖励",
         click_callback=lambda _current_rect: _click_reward_blank(),
         log_callback=lambda message: LOGGER.message("获得奖励", message),
@@ -403,11 +407,13 @@ def _dismiss_reward() -> bool:
 
 
 def _return_to_courtyard() -> bool:
+    deadline = time.monotonic() + RETURN_WAIT_SECONDS
     _, back_rect, _ = _wait_for_template(
         "courtyard_back", "返回庭院标志", RETURN_WAIT_SECONDS
     )
-    if back_rect is None or not _click_and_wait_disappear(
-        "courtyard_back", "返回庭院", back_rect, RETURN_WAIT_SECONDS
+    remaining = deadline - time.monotonic()
+    if back_rect is None or remaining <= 0 or not _click_and_wait_disappear(
+        "courtyard_back", "返回庭院", back_rect, remaining
     ):
         return False
     _, main_rect, _ = _wait_for_template(
@@ -459,11 +465,12 @@ def _purchase_ticket() -> bool:
             f"最高分 {_score_text(best_purchase)}，已点击最大按钮 {click_count} 次"
         )
         return False
-    if not _click_and_wait_disappear(
+    remaining = deadline - time.monotonic()
+    if remaining <= 0 or not _click_and_wait_disappear(
         "purchase",
         "购买按钮",
         purchase_rect,
-        DIALOG_WAIT_SECONDS,
+        remaining,
     ):
         return False
     return _dismiss_reward()
@@ -471,17 +478,20 @@ def _purchase_ticket() -> bool:
 
 def check_consignment_house() -> ConsignmentHouseResult:
     """进入商店和兑换页 → 检查寄售券 → 按需购买 → 确认退出。"""
+    LOGGER.set_stage("进入寄售屋")
     utils.connect_to_mumu()
     print("开始寄售屋周常检测")
 
     # 1. 展开商店入口并进入寄售屋。
     if not _ensure_store_menu_expanded():
         return ConsignmentHouseResult.ERROR
+    entry_deadline = time.monotonic() + ENTRY_WAIT_SECONDS
     _, store_rect, _ = _wait_for_template(
         "store_entry", "商店入口", ENTRY_WAIT_SECONDS
     )
-    if store_rect is None or not _click_and_wait_disappear(
-        "store_entry", "商店入口", store_rect, ENTRY_WAIT_SECONDS
+    remaining = entry_deadline - time.monotonic()
+    if store_rect is None or remaining <= 0 or not _click_and_wait_disappear(
+        "store_entry", "商店入口", store_rect, remaining
     ):
         return ConsignmentHouseResult.ERROR
 
@@ -494,6 +504,7 @@ def check_consignment_house() -> ConsignmentHouseResult:
     _click_rect(consignment_rect, "寄售屋入口")
 
     # 2. 确认兑换灯笼激活后才检查商品，避免把页面未加载当成已购买。
+    LOGGER.set_stage("进入兑换页")
     _, exchange_rect, _ = _wait_for_template(
         "exchange_inactive", "未选中的兑换灯笼", PAGE_WAIT_SECONDS
     )
@@ -506,24 +517,29 @@ def check_consignment_house() -> ConsignmentHouseResult:
         return ConsignmentHouseResult.ERROR
 
     # 3. 区分检测失败和商品已售罄；已购买也必须返回庭院。
+    LOGGER.set_stage("检查寄售券")
     detection_ok, ticket_rect = _find_ticket(TICKET_DETECTION_SECONDS)
     if not detection_ok:
         return ConsignmentHouseResult.ERROR
     if ticket_rect is None:
+        LOGGER.set_stage("返回庭院")
         if not _return_to_courtyard():
             return ConsignmentHouseResult.ERROR
         print("本周寄售券已经购买，已返回庭院")
         return ConsignmentHouseResult.ALREADY_PURCHASED
 
     # 4. 打开购买弹窗，选择最大数量并领取奖励。
+    LOGGER.set_stage("购买寄售券")
     if not _open_purchase_dialog(ticket_rect):
         return ConsignmentHouseResult.ERROR
     if not _purchase_ticket():
         return ConsignmentHouseResult.ERROR
     # 5. 复核兑换页，再返回庭院后报告购买成功。
     # 奖励消失后回到兑换页，此时商品位置会变化；无需再次定位寄售券。
+    LOGGER.set_stage("复核兑换页")
     if not _wait_for_exchange_active(PAGE_WAIT_SECONDS):
         return ConsignmentHouseResult.ERROR
+    LOGGER.set_stage("返回庭院")
     if not _return_to_courtyard():
         return ConsignmentHouseResult.ERROR
     print("寄售券购买成功，已返回庭院")

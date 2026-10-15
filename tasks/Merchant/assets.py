@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from module.assets import CommonUIAssets
 from module.base.assets import ClickAsset, ImageAsset, TaskAssets
 
 
@@ -25,7 +26,7 @@ class MerchantAssets(TaskAssets):
 
     # 商店入口
     I_STORE_ENTRY = ImageAsset(
-        file=RES_DIR / "store_entry.png",
+        file=CommonUIAssets.I_STORE_ENTRY.file,
         region=((550, 560), (850, 720)),
         threshold=0.88,
         name='store_entry',
@@ -33,7 +34,7 @@ class MerchantAssets(TaskAssets):
 
     # 功能菜单卷轴
     I_MENU_SCROLL = ImageAsset(
-        file=RES_DIR / "menu_scroll.png",
+        file=CommonUIAssets.I_MENU_SCROLL.file,
         region=((1100, 540), (1280, 720)),
         threshold=0.8,
         name='menu_scroll',
@@ -89,7 +90,7 @@ class MerchantAssets(TaskAssets):
 
     # 确认按钮
     I_CONFIRM = ImageAsset(
-        file=RES_DIR / "confirm.png",
+        file=CommonUIAssets.I_CONFIRM.file,
         region=((550, 350), (920, 520)),
         threshold=0.9,
         name='confirm',
@@ -97,7 +98,7 @@ class MerchantAssets(TaskAssets):
 
     # 一键返回庭院按钮
     I_COURTYARD_BACK = ImageAsset(
-        file=RES_DIR / "courtyard_back.png",
+        file=CommonUIAssets.I_COURTYARD_BACK.file,
         region=((60, 0), (180, 100)),
         threshold=0.9,
         name='courtyard_back',

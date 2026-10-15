@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from module.assets import CommonUIAssets
 from module.base.assets import ClickAsset, ImageAsset, TaskAssets
 
 
@@ -81,7 +82,7 @@ class GuildKirinAssets(TaskAssets):
 
     # 战斗失败界面
     I_DEFEAT = ImageAsset(
-        file=RES_DIR / "defeat.png",
+        file=CommonUIAssets.I_DEFEAT.file,
         region=((250, 0), (700, 350)),
         threshold=0.75,
         name='defeat',

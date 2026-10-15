@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from module.assets import CommonUIAssets
 from module.base.assets import ClickAsset, ImageAsset, TaskAssets
 
 
@@ -25,7 +26,7 @@ class ExpMonsterAssets(TaskAssets):
 
     # 组队入口
     I_TEAM = ImageAsset(
-        file=RES_DIR / "team.png",
+        file=CommonUIAssets.I_TEAM.file,
         region=((300, 560), (600, 710)),
         threshold=0.9,
         name='team',
@@ -73,7 +74,7 @@ class ExpMonsterAssets(TaskAssets):
 
     # 准备按钮
     I_PREPARE = ImageAsset(
-        file=RES_DIR / "prepare.png",
+        file=CommonUIAssets.I_PREPARE.file,
         region=((1050, 490), (1280, 690)),
         threshold=0.9,
         name='prepare',
@@ -97,7 +98,7 @@ class ExpMonsterAssets(TaskAssets):
 
     # 战斗失败界面
     I_DEFEAT = ImageAsset(
-        file=RES_DIR / "defeat.png",
+        file=CommonUIAssets.I_DEFEAT.file,
         region=((250, 0), (950, 330)),
         threshold=0.9,
         name='defeat',
@@ -105,7 +106,7 @@ class ExpMonsterAssets(TaskAssets):
 
     # 返回按钮
     I_BACK = ImageAsset(
-        file=RES_DIR / "back.png",
+        file=CommonUIAssets.I_BACK.file,
         region=((0, 0), (120, 100)),
         threshold=0.9,
         name='back',
@@ -113,7 +114,7 @@ class ExpMonsterAssets(TaskAssets):
 
     # 退出房间确认弹窗
     I_EXIT_CONFIRM = ImageAsset(
-        file=RES_DIR / "exit_confirm.png",
+        file=CommonUIAssets.I_CONFIRM.file,
         region=((600, 350), (920, 520)),
         threshold=0.9,
         name='exit_confirm',

@@ -32,6 +32,11 @@ class TaskResult:
     completed: bool
     result: Optional[str] = None
     recovery_reason: Optional[str] = None
+    warning: Optional[str] = None
+    stage: Optional[str] = None
+    reason: Optional[str] = None
+    frame: Any = field(default=None, repr=False, compare=False)
+    failure_kind: Optional[str] = None
 
 
 @dataclass(frozen=True)

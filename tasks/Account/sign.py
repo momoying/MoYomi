@@ -26,7 +26,7 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from module import automation as utils
 from module.base.device import TaskDevice
-from module.diagnostics import capture_error_screenshot
+from module.task_execution import report_failure
 from module.logging import TaskLogger
 from module.model_paths import OCR_MODEL_DIR
 
@@ -136,6 +136,13 @@ def _match(frame, name: str) -> Tuple[Optional[float], Optional[Rect]]:
     )
     if score is None or rect is None or score < MATCH_THRESHOLD:
         return score, None
+    if name == "login":
+        # 弹窗后面的登录按钮即使变暗，也可能被相关性匹配判为满分。
+        # 三个登录阶段共用此处保护，系统弹窗存在时不能点击背景登录按钮。
+        for system_name in ("ios", "android"):
+            _, system_rect = _match(frame, system_name)
+            if system_rect is not None:
+                return score, None
     LOGGER.match(
         name,
         name,
@@ -184,12 +191,8 @@ def _take_frame():
     return frame
 
 
-def _save_timeout_screenshot(stage: str, frame=None) -> Optional[Path]:
-    saved_path = capture_error_screenshot("account_sign", stage, frame=frame)
-    if saved_path is not None:
-        print(f"登录报错截图已保存: {saved_path}")
-        return Path(saved_path)
-    return None
+def _report_timeout(stage: str, frame=None) -> None:
+    report_failure(frame=frame)
 
 
 def _wait_and_click(name: str, label: str, timeout: float) -> bool:
@@ -207,27 +210,33 @@ def _wait_and_click(name: str, label: str, timeout: float) -> bool:
         if score is not None and (best_score is None or score > best_score):
             best_score = score
         if rect is not None:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
             print(f"识别到{label}，匹配分数 {score:.3f}")
-            if _click_and_confirm(name, label, rect, timeout):
+            if _click_and_confirm(name, label, rect, remaining):
                 return True
-            _save_timeout_screenshot(f"confirm_{name}")
+            _report_timeout(f"confirm_{name}")
             return False
 
     print(
         f"[ERROR] {timeout:.0f} 秒内未识别到{label}，"
         f"最高匹配分数 {_score_text(best_score)}，要求 {MATCH_THRESHOLD:.2f}"
     )
-    _save_timeout_screenshot(f"wait_{name}", last_frame)
+    _report_timeout(f"wait_{name}", last_frame)
     return False
 
 
 def _wait_and_select_system(system_name: str, timeout: float) -> bool:
-    """登录按钮可能短暂消失后重现，因此持续识别到系统选择真正出现。"""
+    """先识别系统弹窗，再处理登录按钮；必须实际点击目标系统才成功。"""
     deadline = time.monotonic() + timeout
     last_frame = None
     best_login_score: Optional[float] = None
     best_system_score: Optional[float] = None
+    best_other_system_score: Optional[float] = None
+    login_clicks = 0
     system_label = "IOS" if system_name == "ios" else "Android"
+    other_system = "android" if system_name == "ios" else "ios"
 
     while time.monotonic() < deadline:
         frame = _take_frame()
@@ -235,17 +244,7 @@ def _wait_and_select_system(system_name: str, timeout: float) -> bool:
             continue
         last_frame = frame
 
-        login_score, login_rect = _match(frame, "login")
-        if login_score is not None and (
-            best_login_score is None or login_score > best_login_score
-        ):
-            best_login_score = login_score
-        if login_rect is not None:
-            print(f"识别到登录按钮，匹配分数 {login_score:.3f}")
-            _click_region(login_rect, "登录")
-            time.sleep(LOGIN_ACTION_DELAY_SECONDS)
-            continue
-
+        # 不再因背景登录按钮高分命中而跳过本帧的系统识别。
         system_score, system_rect = _match(frame, system_name)
         if system_score is not None and (
             best_system_score is None or system_score > best_system_score
@@ -257,12 +256,39 @@ def _wait_and_select_system(system_name: str, timeout: float) -> bool:
             time.sleep(LOGIN_ACTION_DELAY_SECONDS)
             return True
 
+        other_score, other_rect = _match(frame, other_system)
+        if other_score is not None and (
+            best_other_system_score is None or other_score > best_other_system_score
+        ):
+            best_other_system_score = other_score
+        if other_rect is not None:
+            continue
+
+        login_score, login_rect = _match(frame, "login")
+        if login_score is not None and (
+            best_login_score is None or login_score > best_login_score
+        ):
+            best_login_score = login_score
+        if login_rect is not None:
+            print(
+                f"识别到登录按钮，匹配分数 {login_score:.3f}；"
+                f"当前帧 {system_label} 分数 {_score_text(system_score)}，"
+                f"{other_system} 分数 {_score_text(other_score)}"
+            )
+            if login_clicks:
+                print("[WARN] 系统选择尚未出现，按当前帧识别结果再次点击登录")
+            _click_region(login_rect, "登录")
+            login_clicks += 1
+            time.sleep(LOGIN_ACTION_DELAY_SECONDS)
+
     print(
         f"[ERROR] {timeout:.0f} 秒内未进入{system_label}系统选择，"
         f"登录按钮最高分 {_score_text(best_login_score)}，"
-        f"系统按钮最高分 {_score_text(best_system_score)}"
+        f"系统按钮最高分 {_score_text(best_system_score)}，"
+        f"另一系统按钮最高分 {_score_text(best_other_system_score)}，"
+        f"登录点击次数 {login_clicks}"
     )
-    _save_timeout_screenshot(f"wait_{system_name}", last_frame)
+    _report_timeout(f"wait_{system_name}", last_frame)
     return False
 
 
@@ -291,6 +317,16 @@ def _ocr_texts_in_region(frame, region: Rect) -> list[tuple[str, float]]:
         except (TypeError, ValueError, IndexError):
             continue
     return texts
+
+
+def _recognize_enter_game(frame) -> tuple[Optional[float], list[str]]:
+    recognized = _ocr_texts_in_region(frame, ENTER_GAME_TEXT_REGION)
+    texts = [text for text, _ in recognized]
+    valid = [(text, conf) for text, conf in recognized if conf >= OCR_MIN_CONFIDENCE]
+    combined_text = "".join(text for text, _ in valid).replace(" ", "")
+    if "进入游戏" not in combined_text:
+        return None, texts
+    return max(conf for _, conf in valid), texts
 
 
 def _recognize_current_region(frame) -> tuple[Optional[str], list[str]]:
@@ -463,7 +499,7 @@ def _ensure_region(
         f"卡片 OCR 结果: {last_card_texts}，"
         f"选择区域最高分 {_score_text(best_selection_score)}"
     )
-    _save_timeout_screenshot(f"wait_region_{target_region}", last_frame)
+    _report_timeout(f"wait_region_{target_region}", last_frame)
     return False
 
 
@@ -513,19 +549,12 @@ def _wait_and_enter_game(
             time.sleep(LOGIN_ACTION_DELAY_SECONDS)
             continue
 
-        recognized = _ocr_texts_in_region(frame, ENTER_GAME_TEXT_REGION)
-        valid_texts = [text for text, conf in recognized if conf >= OCR_MIN_CONFIDENCE]
-        # 将所有文本块直接拼接
-        combined_text = "".join(valid_texts)
-        # 去掉可能存在的空格，判断是否包含目标文字
-        enter_game_visible = "进入游戏" in combined_text.replace(" ", "")
-
-        if enter_game_visible:
-            best_confidence = max(conf for _, conf in recognized if conf >= OCR_MIN_CONFIDENCE)
+        enter_confidence, last_texts = _recognize_enter_game(frame)
+        if enter_confidence is not None:
             LOGGER.match(
                 "进入游戏",
-                f"OCR拼接结果:{combined_text}",
-                best_confidence,
+                f"OCR结果:{last_texts}",
+                enter_confidence,
                 OCR_MIN_CONFIDENCE,
                 ENTER_GAME_CLICK_REGION,
                 search_region=ENTER_GAME_TEXT_REGION,
@@ -546,12 +575,13 @@ def _wait_and_enter_game(
                 return True
 
     print(f"[ERROR] {timeout:.0f} 秒内未识别到进入游戏，最后 OCR 结果: {last_texts}")
-    _save_timeout_screenshot("wait_enter_game", last_frame)
+    _report_timeout("wait_enter_game", last_frame)
     return False
 
 
 def run(system: str = "IOS", region: str = "same") -> bool:
     """校验系统和区服 → 登录并选择系统 → 确认目标区服 → 进入游戏。"""
+    LOGGER.set_stage("校验登录参数")
     # 1. 校验参数后才操作模拟器，避免在错误系统或区服执行后续任务。
     normalized_system = normalize_system(system)
     if normalized_system is None:
@@ -569,9 +599,11 @@ def run(system: str = "IOS", region: str = "same") -> bool:
     )
     template_name = normalized_system.lower()
     # 2. 处理登录弹窗并选择系统；每一步失败立即停止后续点击。
+    LOGGER.set_stage("登录及系统选择")
     if not _wait_and_select_system(template_name, LOGIN_STEP_WAIT_SECONDS):
         return False
     # 3. OCR 确认区服，必要时切换角色卡；不能仅凭卡片位置判断。
+    LOGGER.set_stage("确认区服")
     if not _ensure_region(
         template_name,
         normalized_region,
@@ -579,6 +611,7 @@ def run(system: str = "IOS", region: str = "same") -> bool:
     ):
         return False
     # 4. 点击进入游戏并确认按钮消失；庭院就绪由后续流程确认。
+    LOGGER.set_stage("进入游戏")
     if not _wait_and_enter_game(template_name, LOGIN_STEP_WAIT_SECONDS):
         return False
 

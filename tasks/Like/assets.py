@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from module.assets import CommonUIAssets
 from module.base.assets import ClickAsset, ImageAsset, TaskAssets
 
 
@@ -33,7 +34,7 @@ class LikeAssets(TaskAssets):
 
     # 功能菜单卷轴
     I_MENU_SCROLL = ImageAsset(
-        file=RES_DIR / "menu_scroll.png",
+        file=CommonUIAssets.I_MENU_SCROLL.file,
         region=((1100, 540), (1280, 720)),
         threshold=0.8,
         name='menu_scroll',

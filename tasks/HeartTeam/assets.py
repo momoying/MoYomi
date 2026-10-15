@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from module.assets import CommonUIAssets
 from module.base.assets import ClickAsset, ImageAsset, TaskAssets
 
 
@@ -25,7 +26,7 @@ class HeartTeamAssets(TaskAssets):
 
     # 组队入口
     I_TEAM = ImageAsset(
-        file=RES_DIR / "team.png",
+        file=CommonUIAssets.I_TEAM.file,
         region=((300, 560), (600, 710)),
         threshold=0.8,
         name='team',
@@ -33,7 +34,7 @@ class HeartTeamAssets(TaskAssets):
 
     # 功能菜单卷轴
     I_MENU_SCROLL = ImageAsset(
-        file=RES_DIR / "menu_scroll.png",
+        file=CommonUIAssets.I_MENU_SCROLL.file,
         region=((1100, 540), (1280, 720)),
         threshold=0.8,
         name='menu_scroll',
@@ -111,9 +112,24 @@ class HeartTeamAssets(TaskAssets):
         name='challenge',
     )
 
+    # 阵容锁定状态（与协战奖励共用模板；同心队锁图标位于左下角）
+    I_FORMATION_LOCKED = ImageAsset(
+        file=CommonUIAssets.I_FORMATION_LOCKED.file,
+        region=((15, 625), (75, 710)),
+        threshold=0.70,
+        name='formation_locked',
+    )
+    # 左下角阵容未锁定标记
+    I_FORMATION_UNLOCKED = ImageAsset(
+        file=CommonUIAssets.I_FORMATION_UNLOCKED.file,
+        region=((15, 625), (75, 710)),
+        threshold=0.55,
+        name='formation_unlocked',
+    )
+
     # 胜利过渡界面
     I_VICTORY_TRANSITION = ImageAsset(
-        file=RES_DIR / "victory_transition.png",
+        file=CommonUIAssets.I_VICTORY_TRANSITION.file,
         region=((180, 20), (1080, 420)),
         threshold=0.9,
         name='victory_transition',
@@ -121,7 +137,7 @@ class HeartTeamAssets(TaskAssets):
 
     # 奖励结算界面
     I_REWARD = ImageAsset(
-        file=RES_DIR / "reward.png",
+        file=CommonUIAssets.I_REWARD.file,
         region=((350, 300), (900, 680)),
         threshold=0.9,
         name='reward',
@@ -129,7 +145,7 @@ class HeartTeamAssets(TaskAssets):
 
     # 返回按钮
     I_BACK = ImageAsset(
-        file=RES_DIR / "back.png",
+        file=CommonUIAssets.I_BACK.file,
         region=((0, 0), (120, 105)),
         threshold=0.9,
         name='back',
@@ -138,17 +154,25 @@ class HeartTeamAssets(TaskAssets):
     # 退出队伍按钮
     I_EXIT_TEAM = ImageAsset(
         file=RES_DIR / "exit_team.png",
-        region=((690, 0), (850, 135)),
+        region=((690, 0), (920, 135)),
         threshold=0.9,
         name='exit_team',
     )
 
     # 确认按钮
     I_CONFIRM = ImageAsset(
-        file=RES_DIR / "confirm.png",
+        file=CommonUIAssets.I_CONFIRM.file,
         region=((600, 350), (900, 520)),
         threshold=0.9,
         name='confirm',
+    )
+
+    # 体力预存与组队退出共用最新版确认键。
+    I_RESERVE_CONFIRM = ImageAsset(
+        file=CommonUIAssets.I_CONFIRM.file,
+        region=((600, 350), (900, 520)),
+        threshold=0.86,
+        name='reserve_confirm',
     )
 
     # 体力预存入口

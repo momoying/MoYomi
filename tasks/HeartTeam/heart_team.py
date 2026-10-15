@@ -71,9 +71,9 @@ MAX_LEVEL_SCROLLS = 5
 BATTLE_SCREENSHOT_INTERVAL = 2.0
 BATTLE_WAIT_SECONDS = 300.0
 RETURN_WAIT_SECONDS = 30.0
-EXIT_TEAM_CLICK_ATTEMPTS = 3
 EXIT_TEAM_CONFIRM_APPEAR_SECONDS = 4.0
 EXIT_TEAM_CENTER_JITTER = 4
+FORMATION_WAIT_SECONDS = 15.0
 MONDAY_THURSDAY_BATTLE_COUNT = 20
 FRIDAY_SUNDAY_BATTLE_COUNT = 30
 VICTORY_TRANSITION_CLICK_COUNT = (2, 3)
@@ -90,21 +90,49 @@ def _score_text(score: Optional[float]) -> str:
     return "无" if score is None else f"{score:.3f}"
 
 
-def _take_frame():
+def _step_deadline(timeout: float, deadline: Optional[float]) -> float:
+    limit = time.monotonic() + max(0.0, float(timeout))
+    return min(limit, deadline) if deadline is not None else limit
+
+
+def _can_continue(deadline: float, stop_event=None) -> bool:
+    return time.monotonic() < deadline and not (
+        stop_event is not None and stop_event.is_set()
+    )
+
+
+def _wait_next_frame(deadline: float, stop_event=None) -> None:
+    delay = min(SCREENSHOT_INTERVAL, max(0.0, deadline - time.monotonic()))
+    if delay > 0:
+        if stop_event is None:
+            time.sleep(delay)
+        else:
+            stop_event.wait(delay)
+
+
+def _take_frame(*, deadline: Optional[float] = None, stop_event=None):
+    if deadline is not None and not _can_continue(deadline, stop_event):
+        return None
     frame = DEVICE.screenshot()
     if frame is None:
         print("[WARN] 截图失败，等待下一帧")
-        time.sleep(SCREENSHOT_INTERVAL)
+        if deadline is None:
+            time.sleep(SCREENSHOT_INTERVAL)
+        else:
+            _wait_next_frame(deadline, stop_event)
     return frame
 
 
 def _match(frame, name: str) -> Tuple[Optional[float], Optional[Rect]]:
-    top_left, bottom_right = REGIONS[name]
-    threshold = MATCH_THRESHOLDS.get(name, MATCH_THRESHOLD)
+    asset = getattr(ASSETS, f"I_{name.upper()}")
+    if asset.region is None:
+        raise ValueError(f"任务图片缺少搜索区域: {name}")
+    top_left, bottom_right = asset.region
+    threshold = asset.threshold
     score, rect = DEVICE.match(
         top_left,
         bottom_right,
-        TEMPLATES[name],
+        asset.path,
         frame=frame,
     )
     if score is None or rect is None or score < threshold:
@@ -140,6 +168,58 @@ def _click_rect(rect: Rect, label: str) -> None:
     y = _safe_randint(top, bottom, margin_y)
     LOGGER.click(label, label, rect, (x, y))
     DEVICE.click(x, y)
+
+
+def _ensure_formation_locked() -> bool:
+    """首次挑战前检查阵容状态；未上锁时点击锁图标并确认生效。"""
+    deadline = time.monotonic() + FORMATION_WAIT_SECONDS
+    best_locked: Optional[float] = None
+    best_unlocked: Optional[float] = None
+    clicked = False
+    while _can_continue(deadline):
+        frame = _take_frame(deadline=deadline)
+        if not _can_continue(deadline):
+            break
+        if frame is None:
+            continue
+        locked_score, locked_rect = _match(frame, "formation_locked")
+        if not _can_continue(deadline):
+            break
+        unlocked_score, unlocked_rect = _match(frame, "formation_unlocked")
+        if not _can_continue(deadline):
+            break
+        if locked_score is not None and (
+            best_locked is None or locked_score > best_locked
+        ):
+            best_locked = locked_score
+        if unlocked_score is not None and (
+            best_unlocked is None or unlocked_score > best_unlocked
+        ):
+            best_unlocked = unlocked_score
+
+        if locked_rect is not None and (
+            unlocked_rect is None or (locked_score or 0.0) > (unlocked_score or 0.0)
+        ):
+            print(
+                "阵容已经上锁，锁定/未锁定模板分数 "
+                f"{_score_text(locked_score)}/{_score_text(unlocked_score)}"
+            )
+            return True
+        if unlocked_rect is not None and not clicked:
+            print("阵容尚未上锁，点击锁定")
+            if not _can_continue(deadline):
+                break
+            clicked = True
+            _click_rect(unlocked_rect, "锁定阵容")
+            _wait_next_frame(deadline)
+            continue
+        _wait_next_frame(deadline)
+
+    print(
+        "[ERROR] 未能确认阵容上锁，锁定/未锁定模板最高分 "
+        f"{_score_text(best_locked)}/{_score_text(best_unlocked)}"
+    )
+    return False
 
 
 def _click_random_region(region: Rect, label: str) -> None:
@@ -180,20 +260,29 @@ def _click_and_confirm(
     label: str,
     rect: Rect,
     timeout: float,
+    *,
+    deadline: Optional[float] = None,
+    stop_event=None,
 ) -> bool:
-    top_left, bottom_right = REGIONS[name]
-    threshold = MATCH_THRESHOLDS.get(name, MATCH_THRESHOLD)
-    return DEVICE.click_until_disappears(
-        top_left,
-        bottom_right,
-        TEMPLATES[name],
-        rect,
-        threshold=threshold,
-        timeout=timeout,
-        label=label,
-        click_callback=lambda current_rect: _click_rect(current_rect, label),
-        log_callback=lambda message: LOGGER.message(label, message),
-    )
+    # 每个操作只点击一次；后续帧用于确认生效，不重复点击。
+    if name in {"confirm", "reserve_confirm", "back"}:
+        timeout = min(timeout, EXIT_TEAM_CONFIRM_APPEAR_SECONDS)
+    deadline = _step_deadline(timeout, deadline)
+    if not _can_continue(deadline, stop_event):
+        return False
+    _click_rect(rect, label)
+    _wait_next_frame(deadline, stop_event)
+    while _can_continue(deadline, stop_event):
+        frame = _take_frame(deadline=deadline, stop_event=stop_event)
+        if frame is None or not _can_continue(deadline, stop_event):
+            continue
+        _score, current_rect = _match(frame, name)
+        if current_rect is None:
+            print(f"{label}模板已消失，点击已生效")
+            return True
+        _wait_next_frame(deadline, stop_event)
+    print(f"[ERROR] {label}点击一次后仍未生效，停止当前流程")
+    return False
 
 
 def _ensure_team_menu_expanded() -> bool:
@@ -263,26 +352,34 @@ def _wait_and_click(
     label: str,
     timeout: float,
     confirm_disappears: bool = True,
+    *,
+    deadline: Optional[float] = None,
+    stop_event=None,
 ) -> bool:
-    deadline = time.monotonic() + timeout
+    deadline = _step_deadline(timeout, deadline)
     best_score: Optional[float] = None
 
-    while time.monotonic() < deadline:
-        frame = _take_frame()
-        if frame is None:
+    while _can_continue(deadline, stop_event):
+        frame = _take_frame(deadline=deadline, stop_event=stop_event)
+        if frame is None or not _can_continue(deadline, stop_event):
             continue
         score, rect = _match(frame, name)
         if score is not None and (best_score is None or score > best_score):
             best_score = score
         if rect is None:
+            _wait_next_frame(deadline, stop_event)
             continue
 
         print(f"识别到{label}，匹配分数 {score:.3f}")
+        if not _can_continue(deadline, stop_event):
+            return False
         if not confirm_disappears:
             _click_rect(rect, label)
             return True
-        remaining = max(0.1, deadline - time.monotonic())
-        return _click_and_confirm(name, label, rect, remaining)
+        remaining = deadline - time.monotonic()
+        return _click_and_confirm(
+            name, label, rect, remaining, deadline=deadline, stop_event=stop_event,
+        )
 
     print(
         f"[ERROR] {timeout:.0f} 秒内未识别到{label}，"
@@ -689,8 +786,16 @@ def _run_battles(
         )
     else:
         print(f"本日同心队计划战斗 {target_count} 场")
+    formation_checked = completed_battles > 0
     for battle_index in range(completed_battles + 1, target_count + 1):
+        LOGGER.set_stage(f"同心队战斗第 {battle_index}/{target_count} 场")
         print(f"准备第 {battle_index}/{target_count} 场同心队战斗")
+        if not formation_checked:
+            LOGGER.set_stage("首次战斗锁阵检查")
+            if not _ensure_formation_locked():
+                return False
+            formation_checked = True
+            LOGGER.set_stage(f"同心队战斗第 {battle_index}/{target_count} 场")
         if not _wait_and_click("challenge", "挑战", PAGE_WAIT_SECONDS):
             return False
         battle_result = collect_battle_rewards()
@@ -720,12 +825,15 @@ def _run_battles(
     return True
 
 
-def _wait_for_template(name: str, label: str, timeout: float) -> bool:
-    deadline = time.monotonic() + timeout
+def _wait_for_template(
+    name: str, label: str, timeout: float, *, deadline: Optional[float] = None,
+    stop_event=None,
+) -> bool:
+    deadline = _step_deadline(timeout, deadline)
     best_score: Optional[float] = None
-    while time.monotonic() < deadline:
-        frame = _take_frame()
-        if frame is None:
+    while _can_continue(deadline, stop_event):
+        frame = _take_frame(deadline=deadline, stop_event=stop_event)
+        if frame is None or not _can_continue(deadline, stop_event):
             continue
         score, rect = _match(frame, name)
         if score is not None and (best_score is None or score > best_score):
@@ -733,6 +841,7 @@ def _wait_for_template(name: str, label: str, timeout: float) -> bool:
         if rect is not None:
             print(f"识别到{label}，匹配分数 {score:.3f}")
             return True
+        _wait_next_frame(deadline, stop_event)
     print(
         f"[ERROR] {timeout:.0f} 秒内未识别到{label}，"
         f"最高匹配分数 {_score_text(best_score)}"
@@ -740,16 +849,19 @@ def _wait_for_template(name: str, label: str, timeout: float) -> bool:
     return False
 
 
-def _template_appears(name: str, timeout: float) -> bool:
+def _template_appears(
+    name: str, timeout: float, *, deadline: Optional[float] = None, stop_event=None,
+) -> bool:
     """静默等待可选页面标志，用于存在两种正常返回路径的场景。"""
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        frame = _take_frame()
-        if frame is None:
+    deadline = _step_deadline(timeout, deadline)
+    while _can_continue(deadline, stop_event):
+        frame = _take_frame(deadline=deadline, stop_event=stop_event)
+        if frame is None or not _can_continue(deadline, stop_event):
             continue
         _score, rect = _match(frame, name)
         if rect is not None:
             return True
+        _wait_next_frame(deadline, stop_event)
     return False
 
 
@@ -867,8 +979,11 @@ def _return_member_to_courtyard() -> bool:
     return False
 
 
-def _run_member_reserve() -> bool:
+def _run_member_reserve(
+    on_warning: Optional[Callable[[str], None]] = None,
+) -> bool:
     """根据预存体力缺口，每差 100 点执行一次一键预存并逐次确认。"""
+    LOGGER.set_stage("读取预存体力")
     if not _wait_and_click("reserve", "成员预存入口", PAGE_WAIT_SECONDS):
         return False
     stamina = _wait_for_reserved_stamina()
@@ -888,6 +1003,7 @@ def _run_member_reserve() -> bool:
         f"需要一键预存 {click_count} 次"
     )
     for index in range(1, click_count + 1):
+        LOGGER.set_stage(f"成员预存第 {index}/{click_count} 次")
         if not _wait_and_click(
             "one_click_reserve",
             f"一键预存（第 {index}/{click_count} 次）",
@@ -896,28 +1012,39 @@ def _run_member_reserve() -> bool:
         ):
             return False
         if not _wait_and_click(
-            "confirm",
+            "reserve_confirm",
             f"确认预存（第 {index}/{click_count} 次）",
             PAGE_WAIT_SECONDS,
         ):
             return False
         time.sleep(SCREENSHOT_INTERVAL)
 
+    LOGGER.set_stage("复核预存体力")
     final_stamina = _wait_for_reserved_stamina()
     if final_stamina is None:
         return False
     final_current, final_maximum = final_stamina
-    if final_current != final_maximum:
+    if final_current < 200:
         print(
-            "[ERROR] 一键预存次数执行完毕但体力仍未满："
+            "[ERROR] 预存后体力低于最低要求 200："
             f"{final_current}/{final_maximum}"
         )
         return False
-    print(f"[SUCCESS] 成员预存体力已补满：{final_current}/{final_maximum}")
+    if final_current < final_maximum:
+        warning = (
+            "一键预存后体力未满，但已达到最低要求："
+            f"{final_current}/{final_maximum}（下限 200）"
+        )
+        print(f"[WARN] {warning}")
+        if on_warning is not None:
+            on_warning(warning)
+    else:
+        print(f"[SUCCESS] 成员预存体力已补满：{final_current}/{final_maximum}")
+    LOGGER.set_stage("返回庭院")
     return _return_member_to_courtyard()
 
 
-def _click_exit_team_center(rect: Rect, label: str, attempt: int) -> None:
+def _click_exit_team_center(rect: Rect, label: str) -> None:
     """点击顶部退出集结叉号中心，避免小模板边缘落点无效。"""
     left, top, right, bottom = rect
     center_x = (left + right) // 2
@@ -930,8 +1057,7 @@ def _click_exit_team_center(rect: Rect, label: str, attempt: int) -> None:
         max(top, center_y - EXIT_TEAM_CENTER_JITTER),
         min(bottom, center_y + EXIT_TEAM_CENTER_JITTER),
     )
-    click_label = f"{label}（第 {attempt}/{EXIT_TEAM_CLICK_ATTEMPTS} 次）"
-    LOGGER.click(click_label, label, rect, (x, y))
+    LOGGER.click(label, label, rect, (x, y))
     DEVICE.click(x, y)
 
 
@@ -939,47 +1065,39 @@ def _click_exit_team_until_confirm(
     *,
     exit_rect: Optional[Rect],
     label: str,
+    deadline: Optional[float] = None,
+    stop_event=None,
 ) -> bool:
-    """点击退出集结叉号；只有确认弹窗出现才视为点击生效。"""
+    """退出集结叉号只点一次，未出现确认弹窗就停止。"""
+    LOGGER.set_stage("退出集结")
     current_rect = exit_rect
     best_score: Optional[float] = None
-    for attempt in range(1, EXIT_TEAM_CLICK_ATTEMPTS + 1):
+    deadline = _step_deadline(RETURN_WAIT_SECONDS, deadline)
+    while current_rect is None and _can_continue(deadline, stop_event):
+        frame = _take_frame(deadline=deadline, stop_event=stop_event)
+        if frame is None or not _can_continue(deadline, stop_event):
+            continue
+        score, current_rect = _match(frame, "exit_team")
+        if score is not None and (best_score is None or score > best_score):
+            best_score = score
         if current_rect is None:
-            deadline = time.monotonic() + RETURN_WAIT_SECONDS
-            while time.monotonic() < deadline:
-                frame = _take_frame()
-                if frame is None:
-                    continue
-                score, matched_rect = _match(frame, "exit_team")
-                if score is not None and (
-                    best_score is None or score > best_score
-                ):
-                    best_score = score
-                if matched_rect is not None:
-                    current_rect = matched_rect
-                    break
-            if current_rect is None:
-                print(
-                    "[ERROR] 未识别到顶部退出组队按钮，"
-                    f"最高匹配分数 {_score_text(best_score)}"
-                )
-                return False
-
-        _click_exit_team_center(current_rect, label, attempt)
-        if _template_appears("confirm", EXIT_TEAM_CONFIRM_APPEAR_SECONDS):
-            print(f"{label}点击已生效，退出确认框已经出现")
-            return True
-
+            _wait_next_frame(deadline, stop_event)
+    if current_rect is None:
         print(
-            f"[WARN] {label}第 {attempt}/{EXIT_TEAM_CLICK_ATTEMPTS} 次点击后"
-            "未出现确认框，重新识别并点击按钮中心"
+            "[ERROR] 未识别到顶部退出组队按钮，"
+            f"最高匹配分数 {_score_text(best_score)}"
         )
-        current_rect = None
-
-    print(
-        f"[ERROR] {label}连续点击 {EXIT_TEAM_CLICK_ATTEMPTS} 次"
-        "仍未出现确认框"
-    )
+        return False
+    if not _can_continue(deadline, stop_event):
+        return False
+    _click_exit_team_center(current_rect, label)
+    if _template_appears(
+        "confirm", EXIT_TEAM_CONFIRM_APPEAR_SECONDS,
+        deadline=deadline, stop_event=stop_event,
+    ):
+        print(f"{label}点击已生效，退出确认框已经出现")
+        return True
+    print(f"[ERROR] {label}点击一次后未出现确认框，停止当前流程")
     return False
 
 
@@ -987,31 +1105,51 @@ def _exit_gathering_to_courtyard(
     *,
     exit_rect: Optional[Rect] = None,
     label_prefix: str = "",
+    deadline: Optional[float] = None,
+    stop_event=None,
 ) -> bool:
     """退出仍在进行的同心队集结，并保证最终停留在庭院。"""
+    LOGGER.set_stage("退出集结")
+    if deadline is None:
+        deadline = time.monotonic() + RETURN_WAIT_SECONDS
+    if not _can_continue(deadline, stop_event):
+        return False
     prefix = f"{label_prefix}" if label_prefix else ""
     if not _click_exit_team_until_confirm(
         exit_rect=exit_rect,
         label=f"{prefix}退出组队",
+        deadline=deadline,
+        stop_event=stop_event,
     ):
         return False
+    LOGGER.set_stage("确认退出集结")
     if not _wait_and_click(
         "confirm",
         f"{prefix}退出组队确认",
-        RETURN_WAIT_SECONDS,
+        EXIT_TEAM_CONFIRM_APPEAR_SECONDS,
+        deadline=deadline,
+        stop_event=stop_event,
     ):
         return False
-    if _template_appears("main", 5.0):
+    if _template_appears("main", 5.0, deadline=deadline, stop_event=stop_event):
         print(f"{prefix}确认退出组队后已经在庭院")
         return True
+    if not _can_continue(deadline, stop_event):
+        return False
     print(f"{prefix}确认退出组队后仍在集结页，继续点击左上角返回")
+    LOGGER.set_stage("返回庭院")
     if not _wait_and_click(
         "back",
         f"{prefix}集结页返回",
         RETURN_WAIT_SECONDS,
+        deadline=deadline,
+        stop_event=stop_event,
     ):
         return False
-    if not _wait_for_template("main", "庭院探索灯笼", RETURN_WAIT_SECONDS):
+    if not _wait_for_template(
+        "main", "庭院探索灯笼", RETURN_WAIT_SECONDS,
+        deadline=deadline, stop_event=stop_event,
+    ):
         return False
     print(f"{prefix}已退出同心队并返回庭院")
     return True
@@ -1039,12 +1177,14 @@ def recover_after_completed_battles(
     stop_event=None,
     *,
     timeout: float = 90.0,
-    fallback: Optional[Callable[[Any], Any]] = None,
+    fallback: Optional[Callable[..., Any]] = None,
 ) -> Any:
     """战斗已完成但退出失败时，从任意退出阶段解除组队并回到庭院。"""
-    deadline = time.monotonic() + max(1.0, float(timeout))
+    LOGGER.set_stage("同心队专属恢复")
+    deadline = _step_deadline(timeout, None)
     action_count = 0
     unknown_since: Optional[float] = None
+    back_deadline: Optional[float] = None
     print("开始同心队战后专属恢复：解除组队并返回庭院")
 
     while time.monotonic() < deadline:
@@ -1052,46 +1192,50 @@ def recover_after_completed_battles(
             print("[WARN] 用户请求停止，取消同心队战后恢复")
             return False
 
-        frame = _take_frame()
-        if frame is None:
+        frame = _take_frame(deadline=deadline, stop_event=stop_event)
+        if frame is None or not _can_continue(deadline, stop_event):
             continue
 
         # 奖励页卡住时必须点击左右安全区，不能直接点击奖励袋或背景返回键。
         _reward_score, reward_rect = _match(frame, "reward")
         if reward_rect is not None:
+            if not _can_continue(deadline, stop_event):
+                break
             unknown_since = None
             _click_random_reward_side()
             action_count += 1
-            time.sleep(SCREENSHOT_INTERVAL)
+            _wait_next_frame(deadline, stop_event)
             continue
 
         # 确认框可能覆盖在返回键或退出集结按钮上，必须优先处理。
         _confirm_score, confirm_rect = _match(frame, "confirm")
         if confirm_rect is not None:
             unknown_since = None
-            remaining = max(0.1, deadline - time.monotonic())
+            remaining = min(RETURN_WAIT_SECONDS, max(0.0, deadline - time.monotonic()))
             if not _click_and_confirm(
                 "confirm",
                 "战后恢复/退出确认",
                 confirm_rect,
                 remaining,
+                deadline=deadline,
+                stop_event=stop_event,
             ):
                 return False
             action_count += 1
-            time.sleep(SCREENSHOT_INTERVAL)
+            back_deadline = None
+            _wait_next_frame(deadline, stop_event)
             continue
 
         # 庭院也可能仍显示同心队集结横幅，因此要先解除集结，再判定成功。
         _exit_score, exit_rect = _match(frame, "exit_team")
         if exit_rect is not None:
             unknown_since = None
-            if not _click_exit_team_until_confirm(
+            return _exit_gathering_to_courtyard(
                 exit_rect=exit_rect,
-                label="战后恢复/退出组队",
-            ):
-                return False
-            action_count += 1
-            continue
+                label_prefix="战后恢复/",
+                deadline=deadline,
+                stop_event=stop_event,
+            )
 
         _main_score, main_rect = _match(frame, "main")
         if main_rect is not None:
@@ -1101,12 +1245,22 @@ def recover_after_completed_battles(
             )
             return True
 
+        if back_deadline is not None:
+            if time.monotonic() >= back_deadline:
+                print("[ERROR] 战后恢复返回已点击一次，但未出现确认框或庭院，停止恢复")
+                return False
+            _wait_next_frame(deadline, stop_event)
+            continue
+
         _back_score, back_rect = _match(frame, "back")
         if back_rect is not None:
+            if not _can_continue(deadline, stop_event):
+                break
             unknown_since = None
             _click_rect(back_rect, "战后恢复/左上角返回")
             action_count += 1
-            time.sleep(1.0)
+            back_deadline = time.monotonic() + EXIT_TEAM_CONFIRM_APPEAR_SECONDS
+            _wait_next_frame(deadline, stop_event)
             continue
 
         if fallback is not None:
@@ -1117,9 +1271,12 @@ def recover_after_completed_battles(
                     "同心队专属恢复连续 3 秒未识别到专属状态，"
                     "转交通用返回恢复"
                 )
-                return fallback(stop_event)
+                remaining = deadline - time.monotonic()
+                if not _can_continue(deadline, stop_event):
+                    return False
+                return fallback(stop_event, timeout=remaining)
 
-        time.sleep(SCREENSHOT_INTERVAL)
+        _wait_next_frame(deadline, stop_event)
 
     print(f"[ERROR] 同心队战后恢复超过 {timeout:.0f} 秒仍未回到无组队状态的庭院")
     return False
@@ -1129,7 +1286,7 @@ def recover_to_courtyard(
     stop_event=None,
     *,
     timeout: float = 90.0,
-    fallback: Optional[Callable[[Any], Any]] = None,
+    fallback: Optional[Callable[..., Any]] = None,
 ) -> Any:
     """同心队任意阶段出错时，统一执行专属退队并返回庭院。"""
     return recover_after_completed_battles(
@@ -1154,7 +1311,7 @@ def _leave_team_to_courtyard() -> bool:
     if not _wait_and_click(
         "confirm",
         "确认退出组队面板",
-        RETURN_WAIT_SECONDS,
+        EXIT_TEAM_CONFIRM_APPEAR_SECONDS,
     ):
         return False
     return _exit_gathering_to_courtyard()
@@ -1182,8 +1339,10 @@ def run(
     role: str = "leader",
     completed_battles: int = 0,
     on_battle_completed: Optional[Callable[[int, int], None]] = None,
+    on_warning: Optional[Callable[[str], None]] = None,
 ) -> bool | str:
     """清理残留集结 → 进入同心队 → 成员预存或队长战斗 → 退出。"""
+    LOGGER.set_stage("校验同心队身份")
     # 1. 校验身份并清除残留集结状态，再进入同心队页面。
     if role not in {"leader", "member"}:
         print("[ERROR] 未配置有效的同心队身份")
@@ -1191,9 +1350,11 @@ def run(
 
     utils.connect_to_mumu()
     print(f"开始同心队{'队长' if role == 'leader' else '成员'}流程")
+    LOGGER.set_stage("清理残留集结")
     if not _cleanup_stale_gathering_before_start():
         print("[ERROR] 未能清理上一次异常遗留的同心队集结状态")
         return False
+    LOGGER.set_stage("进入同心队")
     if not _ensure_team_menu_expanded():
         return False
     if not _wait_and_click("team", "组队", PAGE_WAIT_SECONDS):
@@ -1202,11 +1363,15 @@ def run(
         return False
     # 2. 成员执行预存流程并自行返回庭院，不进入队长战斗分支。
     if role == "member":
-        return _run_member_reserve()
+        if on_warning is None:
+            return _run_member_reserve()
+        return _run_member_reserve(on_warning=on_warning)
 
     # 3. 队长集结并创建队伍，从已记录场次继续，每场完成回调中控。
+    LOGGER.set_stage("配置并创建队伍")
     if not _prepare_leader_team():
         return False
+    LOGGER.set_stage("同心队战斗")
     battle_result = _run_battles(
         completed_battles=completed_battles,
         on_battle_completed=on_battle_completed,

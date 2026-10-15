@@ -6,6 +6,7 @@ import random
 from typing import Any, Optional
 
 from module.base.assets import ClickAsset, ImageAsset, Rect
+from module.task_execution import check_stopped, record_frame
 
 
 class TaskDevice:
@@ -20,7 +21,11 @@ class TaskDevice:
         self.logger = logger
 
     def screenshot(self):
-        return self.backend.take_screenshot()
+        check_stopped()
+        frame = self.backend.take_screenshot()
+        record_frame(frame)
+        check_stopped()
+        return frame
 
     def last_screenshot(self):
         return self.backend.get_last_screenshot()
@@ -36,6 +41,7 @@ class TaskDevice:
         screenshot_path=None,
         frame=None,
     ):
+        check_stopped()
         return self.backend.crop_and_match(
             top_left,
             bottom_right,
@@ -68,6 +74,7 @@ class TaskDevice:
         rect: Optional[Rect] = None,
         stage: Optional[str] = None,
     ):
+        check_stopped()
         if self.logger is not None and label and rect is not None:
             self.logger.click(stage or label, label, rect, (int(x), int(y)))
         return self.backend.adb_click(int(x), int(y))
@@ -99,9 +106,11 @@ class TaskDevice:
         )
 
     def click_until_disappears(self, *args, **kwargs):
+        check_stopped()
         return self.backend.click_template_until_disappears(*args, **kwargs)
 
     def swipe(self, start_x, start_y, end_x, end_y, duration_ms=800):
+        check_stopped()
         return self.backend.adb_swipe(
             start_x,
             start_y,
@@ -111,7 +120,9 @@ class TaskDevice:
         )
 
     def keyevent(self, keycode):
+        check_stopped()
         return self.backend.adb_keyevent(keycode)
 
     def back(self):
+        check_stopped()
         return self.backend.adb_back()

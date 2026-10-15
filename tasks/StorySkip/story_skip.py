@@ -16,9 +16,12 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from module import automation as utils
 from module.base.device import TaskDevice
+from module.logging import TaskLogger
 
 
-DEVICE = TaskDevice(utils)
+LOGGER = TaskLogger("剧情跳过")
+DEVICE = TaskDevice(utils, LOGGER)
+print = LOGGER.legacy_print
 
 
 from tasks.StorySkip.assets import StoryAction, StorySkipAssets
@@ -138,14 +141,15 @@ def process_battle_prepare_frame(frame, *, perform_click: bool = True) -> bool:
         return False
 
     x, y = _random_inner_point(rect)
-    print(f"识别到准备，匹配分数 {score:.3f}，点击 ({x}, {y})")
     if perform_click:
+        print(f"识别到准备，匹配分数 {score:.3f}，点击 ({x}, {y})")
         DEVICE.click(x, y)
     return True
 
 
 def run(stop_event=None) -> bool:
     """按优先级跳过剧情 → 确认挑战 → 准备和领奖 → 恢复剧情检测；支持安全停止。"""
+    LOGGER.set_stage("连接模拟器")
     if not utils.connect_to_mumu():
         raise RuntimeError(
             "无法连接 MuMu ADB，无法执行点击；请检查 cfg.txt 中的 adb_path 和 adb_port"
@@ -164,7 +168,7 @@ def run(stop_event=None) -> bool:
     challenge_pending = False
     in_battle = False
     battle_phase = "prepare"
-    prepare_clicked = False
+    prepare_clicks = 0
     reward_clicked = False
 
     while stop_event is None or not stop_event.is_set():
@@ -177,12 +181,13 @@ def run(stop_event=None) -> bool:
 
         # 2. 挑战按钮消失后才进入战斗模式，并降低截图频率。
         if challenge_pending:
+            LOGGER.set_stage("确认进入战斗")
             challenge_visible = process_challenge_confirmation_frame(frame)
             if not challenge_visible:
                 challenge_pending = False
                 in_battle = True
                 battle_phase = "prepare"
-                prepare_clicked = False
+                prepare_clicks = 0
                 reward_clicked = False
                 utils.config["screenshot_speed"] = BATTLE_SCREENSHOT_INTERVAL
                 print("挑战标志已消失，确认进入战斗；截屏间隔调整为 3 秒")
@@ -191,14 +196,21 @@ def run(stop_event=None) -> bool:
         # 3. 准备按钮和奖励界面均需先看到、再确认消失，才能进入下一阶段。
         if in_battle:
             if battle_phase == "prepare":
-                prepare_visible = process_battle_prepare_frame(frame)
+                LOGGER.set_stage("准备战斗")
+                prepare_visible = process_battle_prepare_frame(
+                    frame, perform_click=prepare_clicks < 3,
+                )
                 if prepare_visible:
-                    prepare_clicked = True
-                elif prepare_clicked:
+                    if prepare_clicks >= 3:
+                        print("[ERROR] 准备按钮点击 3 次后仍可见，任务终止")
+                        return False
+                    prepare_clicks += 1
+                elif prepare_clicks:
                     battle_phase = "reward"
                     print("准备按钮已消失，开始等待战斗奖励")
                 continue
 
+            LOGGER.set_stage("等待及领取战斗奖励")
             reward_visible = process_battle_frame(frame)
             if reward_visible:
                 reward_clicked = True
@@ -210,6 +222,7 @@ def run(stop_event=None) -> bool:
             continue
 
         # 4. 普通剧情每帧只执行最高优先级动作；挑战点击后下一帧确认。
+        LOGGER.set_stage("跳过剧情")
         action = process_frame(frame)
         if action == "challenge":
             challenge_pending = True

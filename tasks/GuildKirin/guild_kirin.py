@@ -141,11 +141,13 @@ def _wait_for_any(
 
 
 def _wait_and_click(name: str, label: str, timeout: float) -> bool:
+    deadline = time.monotonic() + timeout
     _, matched_name, rect, score = _wait_for_any((name,), timeout)
-    if matched_name is None or rect is None:
+    remaining = deadline - time.monotonic()
+    if matched_name is None or rect is None or remaining <= 0:
         return False
     print(f"识别到{label}，匹配分数 {score:.3f}")
-    if not _click_and_confirm(name, label, rect, timeout):
+    if not _click_and_confirm(name, label, rect, remaining):
         return False
     return True
 
@@ -168,7 +170,9 @@ def _ensure_guild_menu_expanded() -> bool:
         scroll_score, scroll_rect = _match(frame, "menu_scroll")
         if scroll_rect is not None:
             print(f"功能栏未展开，识别到卷轴 {scroll_score:.3f}")
-            remaining = max(0.1, deadline - time.monotonic())
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
             if _click_and_confirm(
                 "menu_scroll",
                 "展开功能栏卷轴",
@@ -201,7 +205,7 @@ def _wait_for_hunting_status() -> Optional[str]:
 
 
 def _confirm_completed_hunting_status() -> bool:
-    """先确认狩猎战页面已加载，再在同一帧复核已挑战标志。"""
+    """识别到狩猎页后固定等待 1 秒，重新截图复核已挑战标志。"""
     deadline = time.monotonic() + PAGE_WAIT_SECONDS
     best_score: Optional[float] = None
 
@@ -216,6 +220,10 @@ def _confirm_completed_hunting_status() -> bool:
             continue
 
         print(f"狩猎战正常界面已显示，退出按钮匹配分数 {score:.3f}")
+        time.sleep(1.0)
+        frame = _take_frame()
+        if frame is None:
+            continue
         challenged_score, challenged_rect = _match(frame, "already_challenged")
         if challenged_rect is not None:
             print(f"狩猎战状态：已挑战，匹配分数 {challenged_score:.3f}")
@@ -327,17 +335,22 @@ def _return_to_main() -> bool:
 def _challenge_and_confirm_completion() -> bool:
     """挑战并准备 → 等待战斗结算 → 关闭结果 → 复核已挑战标志。"""
     # 1. 挑战和准备逐步确认，进入战斗后等待胜负结果。
+    LOGGER.set_stage("发起寮麒麟挑战")
     if not _wait_and_click("challenge", "挑战", PAGE_WAIT_SECONDS):
         return False
+    LOGGER.set_stage("准备战斗")
     if not _wait_and_click("prepare", "准备", PREPARE_WAIT_SECONDS):
         return False
+    LOGGER.set_stage("等待战斗结算")
     battle_result = _wait_for_battle_result()
     if battle_result is None:
         return False
     # 2. 关闭结算并复核狩猎页，不能仅凭战斗结果窗口报告任务完成。
     result_name, result_rect = battle_result
+    LOGGER.set_stage("领取战斗奖励")
     if not _close_battle_result(result_name, result_rect):
         return False
+    LOGGER.set_stage("复核已挑战状态")
     if not _confirm_completed_hunting_status():
         return False
     return True
@@ -345,6 +358,7 @@ def _challenge_and_confirm_completion() -> bool:
 
 def run() -> bool:
     """进入狩猎战 → 按需挑战并确认完成 → 返回庭院。"""
+    LOGGER.set_stage("进入狩猎战")
     utils.connect_to_mumu()
     print("开始寮麒麟任务")
 
@@ -355,8 +369,10 @@ def run() -> bool:
         return False
     if not _wait_and_click("hunting_entry", "狩猎战", PAGE_WAIT_SECONDS):
         return False
+    time.sleep(1.0)
 
     # 2. 已挑战则跳过战斗；识别失败仍按失败处理。
+    LOGGER.set_stage("检查挑战状态")
     status = _wait_for_hunting_status()
     if status is None:
         return False
@@ -368,6 +384,7 @@ def run() -> bool:
         print("当前寮麒麟已经挑战过，跳过战斗")
 
     # 3. 无论本次是否战斗，都确认回到主界面后才报告成功。
+    LOGGER.set_stage("返回庭院")
     if not _return_to_main():
         return False
     print("寮麒麟任务完成，已返回主界面")

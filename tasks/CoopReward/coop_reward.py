@@ -4,7 +4,7 @@ import random
 import sys
 import time
 from pathlib import Path
-from typing import Optional, Tuple
+from typing import Callable, Optional, Tuple
 
 import cv2
 
@@ -142,10 +142,8 @@ def _wait_and_click(
     best_score: Optional[float] = None
     attempts = 0
 
-    while (
-        attempts < max_attempts
-        if max_attempts is not None
-        else time.monotonic() < deadline
+    while time.monotonic() < deadline and (
+        max_attempts is None or attempts < max_attempts
     ):
         attempts += 1
         frame = _take_frame()
@@ -158,12 +156,10 @@ def _wait_and_click(
         if rect is None:
             continue
 
-        print(f"识别到{label}，匹配分数 {score:.3f}")
-        remaining = (
-            timeout
-            if max_attempts is not None
-            else max(0.1, deadline - time.monotonic())
-        )
+        LOGGER.debug("", f"识别到{label}，匹配分数 {score:.3f}")
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
         if _click_and_confirm(name, label, rect, remaining):
             return True
         break
@@ -215,7 +211,8 @@ def _ensure_floor10_active() -> bool:
             best_inactive = inactive_score
 
         if state == "active":
-            print(
+            LOGGER.debug(
+                "",
                 "御魂十层已经选中，选中/未选中模板分数 "
                 f"{_score_text(active_score)}/{_score_text(inactive_score)}"
             )
@@ -225,7 +222,8 @@ def _ensure_floor10_active() -> bool:
             if clicks >= MAX_STATE_CLICKS:
                 break
             clicks += 1
-            print(
+            LOGGER.debug(
+                "",
                 f"识别到未选中的御魂十层，第 {clicks}/{MAX_STATE_CLICKS} 次点击"
             )
             _click_rect(rect, "选择御魂十层")
@@ -290,14 +288,15 @@ def _ensure_formation_locked() -> bool:
             best_unlocked = unlocked_score
 
         if state == "locked":
-            print(
+            LOGGER.debug(
+                "",
                 "阵容已经上锁，锁定/未锁定模板分数 "
                 f"{_score_text(locked_score)}/{_score_text(unlocked_score)}"
             )
             return True
         if state == "unlocked" and rect is not None and clicks < MAX_STATE_CLICKS:
             clicks += 1
-            print(f"阵容尚未上锁，第 {clicks}/{MAX_STATE_CLICKS} 次点击锁定")
+            LOGGER.debug("", f"阵容尚未上锁，第 {clicks}/{MAX_STATE_CLICKS} 次点击锁定")
             _click_rect(rect, "锁定阵容")
             time.sleep(SCREENSHOT_INTERVAL if clicks == 1 else 1.0)
             continue
@@ -330,7 +329,7 @@ def _open_bonus_panel() -> bool:
         ):
             best_start = start_score
         if start_rect is not None:
-            print(f"加成面板已经打开，开始按钮匹配分数 {start_score:.3f}")
+            LOGGER.debug("", f"加成面板已经打开，开始按钮匹配分数 {start_score:.3f}")
             return True
 
         row_score, row_rect = _match(frame, "soul_bonus")
@@ -339,7 +338,7 @@ def _open_bonus_panel() -> bool:
         ):
             best_row = row_score
         if row_rect is not None:
-            print(f"加成面板已经打开，御魂加成行匹配分数 {row_score:.3f}")
+            LOGGER.debug("", f"加成面板已经打开，御魂加成行匹配分数 {row_score:.3f}")
             return True
 
         lantern_score, lantern_rect = _match(frame, "bonus_lantern")
@@ -353,7 +352,7 @@ def _open_bonus_panel() -> bool:
             break
 
         clicks += 1
-        print(f"识别到加成灯笼，第 {clicks}/{MAX_STATE_CLICKS} 次点击")
+        LOGGER.debug("", f"识别到加成灯笼，第 {clicks}/{MAX_STATE_CLICKS} 次点击")
         _click_rect(lantern_rect, "打开加成面板")
         time.sleep(SCREENSHOT_INTERVAL if clicks == 1 else 1.0)
 
@@ -458,10 +457,11 @@ def _click_bonus_start_and_confirm(row_rect: Rect) -> bool:
             continue
         score, start_rect = _bonus_start_match(frame, row_rect)
         if start_rect is None:
-            print("御魂加成开始按钮已消失，加成已经开启")
+            LOGGER.debug("", "御魂加成开始按钮已消失，加成已经开启")
             return True
 
-        print(
+        LOGGER.debug(
+            "",
             f"点击御魂加成开始按钮，第 {attempt}/{MAX_STATE_CLICKS} 次，"
             f"匹配分数 {score:.3f}"
         )
@@ -473,7 +473,7 @@ def _click_bonus_start_and_confirm(row_rect: Rect) -> bool:
             continue
         _, confirmed_rect = _bonus_start_match(confirm_frame, row_rect)
         if confirmed_rect is None:
-            print("御魂加成开始按钮已消失，加成开启成功")
+            LOGGER.debug("", "御魂加成开始按钮已消失，加成开启成功")
             return True
         if attempt == 1:
             time.sleep(1.0)
@@ -481,7 +481,7 @@ def _click_bonus_start_and_confirm(row_rect: Rect) -> bool:
             if delayed_frame is not None:
                 _, delayed_rect = _bonus_start_match(delayed_frame, row_rect)
                 if delayed_rect is None:
-                    print("延迟确认御魂加成已经开启")
+                    LOGGER.debug("", "延迟确认御魂加成已经开启")
                     return True
 
     print("[ERROR] 点击后御魂加成开始按钮仍然存在")
@@ -495,17 +495,19 @@ def _click_bonus_stop_and_confirm(row_rect: Rect) -> bool:
             continue
         _, current_row = _match(frame, "soul_bonus")
         if current_row is None:
-            print("御魂加成行已消失，加成面板已经关闭")
+            LOGGER.debug("", "御魂加成行已消失，加成面板已经关闭")
             return True
         active, yellow_ratio, red_ratio = _bonus_control_state(frame, current_row)
         if not active:
-            print(
+            LOGGER.debug(
+                "",
                 "御魂加成计时条已恢复关闭状态，黄色/红色占比 "
                 f"{yellow_ratio:.3f}/{red_ratio:.3f}"
             )
             return True
 
-        print(
+        LOGGER.debug(
+            "",
             f"点击御魂加成关闭按钮，第 {attempt}/{MAX_STATE_CLICKS} 次，"
             f"黄色/红色占比 {yellow_ratio:.3f}/{red_ratio:.3f}"
         )
@@ -517,14 +519,15 @@ def _click_bonus_stop_and_confirm(row_rect: Rect) -> bool:
             continue
         _, confirmed_row = _match(confirm_frame, "soul_bonus")
         if confirmed_row is None:
-            print("御魂加成行已消失，加成关闭成功")
+            LOGGER.debug("", "御魂加成行已消失，加成关闭成功")
             return True
         confirmed_active, confirmed_yellow, confirmed_red = _bonus_control_state(
             confirm_frame,
             confirmed_row,
         )
         if not confirmed_active:
-            print(
+            LOGGER.debug(
+                "",
                 "御魂加成计时条已恢复关闭状态，黄色/红色占比 "
                 f"{confirmed_yellow:.3f}/{confirmed_red:.3f}"
             )
@@ -535,14 +538,15 @@ def _click_bonus_stop_and_confirm(row_rect: Rect) -> bool:
             if delayed_frame is not None:
                 _, delayed_row = _match(delayed_frame, "soul_bonus")
                 if delayed_row is None:
-                    print("延迟确认御魂加成行已消失")
+                    LOGGER.debug("", "延迟确认御魂加成行已消失")
                     return True
                 delayed_active, delayed_yellow, delayed_red = _bonus_control_state(
                     delayed_frame,
                     delayed_row,
                 )
                 if not delayed_active:
-                    print(
+                    LOGGER.debug(
+                        "",
                         "延迟确认御魂加成已经关闭，黄色/红色占比 "
                         f"{delayed_yellow:.3f}/{delayed_red:.3f}"
                     )
@@ -561,7 +565,7 @@ def _random_swipe_bonus_list(swipe_index: int) -> None:
     )
     end_y = random.randint(*BONUS_SWIPE_END_Y_RANGE)
     duration_ms = random.randint(*BONUS_SWIPE_DURATION_RANGE)
-    LOGGER.message(
+    LOGGER.debug(
         "寻找御魂加成",
         f"第 {swipe_index}/{MAX_BONUS_SWIPES} 次随机滑动 "
         f"({start_x}, {start_y}) -> ({end_x}, {end_y})，"
@@ -592,14 +596,15 @@ def _dismiss_bonus_panel() -> bool:
         if score is not None and (best_score is None or score > best_score):
             best_score = score
         if row_rect is None:
-            print("御魂加成行已消失，加成面板关闭成功")
+            LOGGER.debug("", "御魂加成行已消失，加成面板关闭成功")
             return True
         if clicks >= MAX_STATE_CLICKS:
             break
 
         clicks += 1
         side, blank_rect = random.choice(tuple(BONUS_PANEL_BLANK_AREAS.items()))
-        print(
+        LOGGER.debug(
+            "",
             f"点击加成框{side}空白区域关闭面板，"
             f"第 {clicks}/{MAX_STATE_CLICKS} 次"
         )
@@ -632,7 +637,7 @@ def _enable_soul_bonus() -> bool:
             best_score = score
 
         if row_rect is not None:
-            print(f"识别到八岐大蛇御魂加成，匹配分数 {score:.3f}")
+            LOGGER.debug("", f"识别到八岐大蛇御魂加成，匹配分数 {score:.3f}")
             start_score, start_rect = _bonus_start_match(frame, row_rect)
             if start_rect is None:
                 print(
@@ -677,11 +682,12 @@ def _disable_soul_bonus() -> bool:
             best_score = score
 
         if row_rect is not None:
-            print(f"识别到八岐大蛇御魂加成，匹配分数 {score:.3f}")
+            LOGGER.debug("", f"识别到八岐大蛇御魂加成，匹配分数 {score:.3f}")
             active, yellow_ratio, red_ratio = _bonus_control_state(frame, row_rect)
             highest_yellow_ratio = max(highest_yellow_ratio, yellow_ratio)
             if active:
-                print(
+                LOGGER.debug(
+                    "",
                     "御魂加成处于开启状态，黄色/红色占比 "
                     f"{yellow_ratio:.3f}/{red_ratio:.3f}"
                 )
@@ -690,7 +696,8 @@ def _disable_soul_bonus() -> bool:
                     return _dismiss_bonus_panel()
                 break
 
-            print(
+            LOGGER.debug(
+                "",
                 "御魂加成已经处于关闭状态，无需再次点击，"
                 f"黄色/红色占比 {yellow_ratio:.3f}/{red_ratio:.3f}"
             )
@@ -714,7 +721,7 @@ def _click_random_finish_side() -> None:
     left, top, right, bottom = rect
     x = random.randint(left, right)
     y = random.randint(top, bottom)
-    LOGGER.click("战斗结算", f"{side}空白区域", rect, (x, y))
+    LOGGER.debug("战斗结算", f"点击 {side}空白区域 ({x}, {y})")
     DEVICE.click(x, y)
 
 
@@ -722,20 +729,15 @@ def _rapid_click_victory_transition() -> int:
     """在胜利过渡页右下角快速随机点击 2～3 次。"""
     click_count = random.randint(*VICTORY_TRANSITION_CLICK_COUNT)
     left, top, right, bottom = VICTORY_TRANSITION_CLICK_AREA
-    print(f"快速跳过胜利过渡页，本次随机点击 {click_count} 次")
+    LOGGER.debug("", f"快速跳过胜利过渡页，本次随机点击 {click_count} 次")
     for click_index in range(1, click_count + 1):
         x = random.randint(left, right)
         y = random.randint(top, bottom)
-        LOGGER.click(
-            "胜利过渡",
-            f"右下角快速点击 {click_index}/{click_count}",
-            VICTORY_TRANSITION_CLICK_AREA,
-            (x, y),
-        )
+        LOGGER.debug("胜利过渡", f"右下角快速点击 {click_index}/{click_count} ({x}, {y})")
         DEVICE.click(x, y)
         if click_index < click_count:
             interval = random.uniform(*VICTORY_TRANSITION_CLICK_INTERVAL)
-            print(f"快速点击间隔 {interval:.3f} 秒")
+            LOGGER.debug("", f"快速点击间隔 {interval:.3f} 秒")
             time.sleep(interval)
     return click_count
 
@@ -754,7 +756,7 @@ def _try_reward_stall_recovery(frame) -> Optional[str]:
         return None
 
     score, rect, label = best_match
-    print(f"特殊恢复识别到{label}，全屏匹配分数 {score:.3f}，执行点击")
+    LOGGER.debug("", f"特殊恢复识别到{label}，全屏匹配分数 {score:.3f}，执行点击")
     _click_rect(rect, f"奖励未出现特殊恢复/{label}")
     return label
 
@@ -781,7 +783,7 @@ def collect_battle_rewards(
     post_reward_recovery_deadline: Optional[float] = None
     frame = initial_frame
 
-    print(f"战斗进行中，每 {BATTLE_SCREENSHOT_INTERVAL:g} 秒检查一次胜利结算")
+    LOGGER.debug("", f"战斗进行中，每 {BATTLE_SCREENSHOT_INTERVAL:g} 秒检查一次胜利结算")
     try:
         while time.monotonic() < deadline:
             if frame is None:
@@ -800,7 +802,8 @@ def collect_battle_rewards(
                 best_transition_score = transition_score
             if transition_rect is not None:
                 if not transition_clicked:
-                    print(
+                    LOGGER.debug(
+                        "",
                         "识别到协战胜利过渡页，"
                         f"匹配分数 {transition_score:.3f}"
                     )
@@ -814,7 +817,7 @@ def collect_battle_rewards(
 
             if rect is not None:
                 if not win_seen:
-                    print(f"识别到协战胜利结算，匹配分数 {score:.3f}")
+                    print("战斗胜利")
                     win_seen = True
                 _click_random_finish_side()
                 time.sleep(SCREENSHOT_INTERVAL)
@@ -825,7 +828,8 @@ def collect_battle_rewards(
             if win_seen:
                 challenge_score, challenge_rect = _match(frame, "challenge")
                 if challenge_rect is not None:
-                    print(
+                    LOGGER.debug(
+                        "",
                         "奖励领取完成，已返回御魂挑战页，"
                         f"挑战按钮匹配分数 {challenge_score:.3f}"
                     )
@@ -833,7 +837,8 @@ def collect_battle_rewards(
 
                 if reward_cleared_at is None:
                     reward_cleared_at = now
-                    print(
+                    LOGGER.debug(
+                        "",
                         "胜利奖励模板已消失，等待返回御魂挑战页；"
                         f"超过 {REWARD_STALL_SECONDS:g} 秒将执行特殊恢复"
                     )
@@ -951,7 +956,7 @@ def _return_to_courtyard() -> bool:
         ):
             best_main_score = score
         if rect is not None:
-            print(f"已返回庭院，探索灯笼匹配分数 {score:.3f}")
+            LOGGER.debug("", f"已返回庭院，探索灯笼匹配分数 {score:.3f}")
             return True
 
         if back_clicked:
@@ -966,8 +971,10 @@ def _return_to_courtyard() -> bool:
             time.sleep(SCREENSHOT_INTERVAL)
             continue
 
-        print(f"识别到左上角返回庭院按钮，匹配分数 {back_score:.3f}")
-        remaining = max(0.1, deadline - time.monotonic())
+        LOGGER.debug("", f"识别到左上角返回庭院按钮，匹配分数 {back_score:.3f}")
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
         if not _click_and_confirm(
             "courtyard_back",
             "返回庭院",
@@ -1011,22 +1018,30 @@ def _prepare_soul_dungeon() -> bool:
 def run(
     enable_bonus: bool = True,
     disable_bonus_after: bool = False,
+    on_battle_completed: Optional[Callable[[], None]] = None,
 ) -> bool | str:
     """准备御魂十层 → 挑战并结算 → 最后一场关闭加成并退出。"""
+    LOGGER.set_stage("准备御魂十层")
     utils.connect_to_mumu()
-    print("开始协战奖励任务")
+    LOGGER.debug("", "开始协战奖励任务")
 
     # 1. 首场或恢复后走完整准备；连续场次复用当前挑战页。
     if enable_bonus:
         if not _prepare_soul_dungeon():
             return False
     else:
-        print("继续下一场挑战")
+        LOGGER.debug("", "继续下一场挑战")
 
     # 2. 发起挑战并结算；已结算但退出失败必须保留专用状态，避免重打。
+    LOGGER.set_stage("发起协战挑战")
     if not _wait_and_click("challenge", "挑战", CHALLENGE_WAIT_SECONDS):
         return False
+    LOGGER.set_stage("战斗及奖励结算")
     battle_result = collect_battle_rewards()
+    if battle_result is True or battle_result == BATTLE_COMPLETED_RECOVERY_REQUIRED:
+        # 场次已确认结算，先交给中控落盘；关闭加成和退场不能影响本场计数。
+        if on_battle_completed is not None:
+            on_battle_completed()
     if battle_result == BATTLE_COMPLETED_RECOVERY_REQUIRED:
         print(
             "[WARN] 本场协战已经结算，但未能回到挑战页；"
@@ -1038,21 +1053,23 @@ def run(
 
     # 3. 仅最后一场关闭加成并返回庭院；收尾失败交给中控恢复。
     if disable_bonus_after:
+        LOGGER.set_stage("关闭御魂加成")
         if not _disable_soul_bonus():
             print(
                 "[WARN] 本账号最后一场协战已经结算，但关闭加成失败；"
                 "按任务完成但退场失败处理"
             )
             return BATTLE_COMPLETED_RECOVERY_REQUIRED
+        LOGGER.set_stage("返回庭院")
         if not _return_to_courtyard():
             print(
                 "[WARN] 本账号最后一场协战已经结算，但返回庭院失败；"
                 "按任务完成但退场失败处理"
             )
             return BATTLE_COMPLETED_RECOVERY_REQUIRED
-        print("本账号协战场次全部完成，已关闭加成并返回庭院")
+        print("加成已关闭，已返回庭院")
     else:
-        print("本场协战完成，保留在御魂十层挑战页面")
+        LOGGER.debug("", "本场协战完成，保留在御魂十层挑战页面")
     return True
 
 

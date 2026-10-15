@@ -108,7 +108,7 @@ class RecoveryScenarioTests(unittest.TestCase):
 
     def test_room_return_then_exit_confirmation(self):
         room = self.frame("prepare_button", "ready_room", "exp_back")
-        confirm = self.frame("room_exit_confirm", "prepare_button", "exp_back")
+        confirm = self.frame("exit_confirm", "prepare_button", "exp_back")
         main = self.frame("main")
         result = self.recover([room, room, confirm, confirm, main, main])
         self.assertTrue(result.success)
@@ -117,7 +117,7 @@ class RecoveryScenarioTests(unittest.TestCase):
 
     def test_room_uses_confirmed_generic_return_when_room_button_missing(self):
         room = self.frame("prepare_button", "courtyard")
-        confirm = self.frame("room_exit_confirm", "prepare_button")
+        confirm = self.frame("exit_confirm", "prepare_button")
         main = self.frame("main")
         result = self.recover([room, room, confirm, confirm, main, main])
         self.assertTrue(result.success)
@@ -235,7 +235,7 @@ class RecoveryScenarioTests(unittest.TestCase):
         self.assertEqual(len(self.clicks), 1)
 
     def test_ambiguous_overlays_stop_even_with_generic_return(self):
-        result = self.recover([self.frame("room_exit_confirm", "sign_in_close", "courtyard")])
+        result = self.recover([self.frame("exit_confirm", "sign_in_close", "courtyard")])
         self.assertFalse(result.success)
         self.assertEqual(self.saved[-1][1], "ambiguous_overlay")
         self.assertEqual(self.clicks, [])

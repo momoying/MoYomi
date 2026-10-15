@@ -19,7 +19,7 @@ LOGGER = TaskLogger("报错截图")
 
 def _slug(value: object, fallback: str) -> str:
     text = str(value or "").strip().lower()
-    text = re.sub(r"[^a-z0-9]+", "_", text).strip("_")
+    text = re.sub(r"[^\w]+", "_", text).strip("_")
     return text or fallback
 
 
@@ -127,6 +127,7 @@ class ErrorScreenshotManager:
             self._warn(f"报错截图写入失败：{output.name}")
             return None
         self.prune(keep)
+        LOGGER.error("保存现场", f"报错截图已保存：{output}")
         return str(saved)
 
 

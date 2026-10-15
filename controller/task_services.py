@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import importlib.util
 import sys
+from dataclasses import replace
 from pathlib import Path
 from typing import Any, Callable, Optional
 
@@ -11,6 +12,7 @@ from controller.constants import *
 from controller.state_store import heart_team_role
 from controller.types import ControllerServices, TaskResult
 from module.diagnostics import capture_error_screenshot, configure_error_screenshots
+from module.task_execution import run_task_call
 
 
 def _load_module(name: str, path: Path):
@@ -113,10 +115,13 @@ def build_services(
         for key, module in task_modules.items()
     }
 
-    def recover_generic(stop_event=None):
+    def recover_generic(stop_event=None, *, timeout: Optional[float] = None):
+        recovery_timeout = max(0.1, float(recovery_timeout_seconds))
+        if timeout is not None:
+            recovery_timeout = min(recovery_timeout, max(0.0, float(timeout)))
         return task_recovery_module.recover_to_courtyard(
             stop_event=stop_event,
-            timeout=max(0.1, float(recovery_timeout_seconds)),
+            timeout=recovery_timeout,
             unknown_grace=max(
                 0.1,
                 float(recovery_unknown_grace_seconds),
@@ -191,51 +196,87 @@ def _invoke_task_runner(
     recovery_retry: bool = False,
     completed_battles: int = 0,
     on_battle_completed: Optional[Callable[[int, int], None]] = None,
+    on_coop_battle_completed: Optional[Callable[[], None]] = None,
+    stop_event=None,
 ) -> TaskResult:
     """执行一次任务调用，并统一解释不同任务的返回值。"""
+    warnings: list[str] = []
+    kwargs = {}
     if task_name == COOP_REWARD_TASK:
-        raw_result = runner(
+        kwargs = dict(
             # 普通恢复会回到庭院；无论当前是第几场，恢复后的重试都
             # 必须重新走探索、御魂入口和加成准备流程。
             enable_bonus=run_index == 1 or recovery_retry,
             disable_bonus_after=run_index == run_count,
         )
+        if on_coop_battle_completed is not None:
+            kwargs["on_battle_completed"] = on_coop_battle_completed
+    elif task_name == HEART_TEAM_TASK:
+        kwargs = dict(
+            role=heart_team_role(system_state),
+            completed_battles=completed_battles,
+            on_battle_completed=on_battle_completed,
+            on_warning=warnings.append,
+        )
+    elif task_name == "liked" and region == CROSS_REGION:
+        kwargs = dict(cross_region_only=True)
+
+    raw_result, report = run_task_call(runner, stop_event=stop_event, finish_current=True, **kwargs)
+    details = TaskResult(
+        completed=False, stage=report.stage, reason=report.reason, frame=report.frame,
+        failure_kind="cancelled" if report.cancelled else "exception" if report.exception else None,
+    )
+    if report.exception is not None or (report.cancelled and not raw_result):
+        return details
+    if isinstance(raw_result, TaskResult):
+        return replace(
+            raw_result,
+            stage=raw_result.stage or report.stage,
+            reason=raw_result.reason or report.reason,
+            frame=raw_result.frame if raw_result.frame is not None else report.frame,
+        )
+    if task_name == COOP_REWARD_TASK:
         raw_value = getattr(raw_result, "value", raw_result)
         if raw_value == COOP_BATTLE_COMPLETED_RECOVERY_REQUIRED:
-            return TaskResult(
+            return replace(details,
                 completed=True,
                 result=raw_value,
                 recovery_reason="协战奖励场数已经完成，但奖励领取或退场流程失败",
             )
-        return TaskResult(completed=raw_result is True)
+        return replace(details, completed=raw_result is True)
     elif task_name in {BOUNTY_TASK, MERCHANT_TASK, CONSIGNMENT_HOUSE_TASK}:
-        raw_result = runner()
         task_result = getattr(raw_result, "value", str(raw_result))
         valid_results = {
             BOUNTY_TASK: BOUNTY_RESULT_DETAILS,
             MERCHANT_TASK: MERCHANT_RESULT_DETAILS,
             CONSIGNMENT_HOUSE_TASK: {CONSIGNMENT_ALREADY_PURCHASED, CONSIGNMENT_PURCHASED},
         }[task_name]
-        return TaskResult(completed=task_result in valid_results, result=task_result)
+        return replace(details, completed=task_result in valid_results, result=task_result)
     elif task_name == HEART_TEAM_TASK:
-        raw_result = runner(
-            role=heart_team_role(system_state),
-            completed_battles=completed_battles,
-            on_battle_completed=on_battle_completed,
-        )
         raw_value = getattr(raw_result, "value", raw_result)
         if raw_value == HEART_TEAM_BATTLES_COMPLETED_CLEANUP_FAILED:
             # 战斗目标已经完成，不能走普通失败重试，否则会重复打 20/30 场。
-            return TaskResult(
+            return replace(details,
                 completed=True,
                 result=raw_value,
                 recovery_reason="同心队战斗场数已经完成，但退出组队流程失败",
             )
-        return TaskResult(completed=raw_result is True)
-    elif task_name == "liked" and region == CROSS_REGION:
-        return TaskResult(completed=bool(runner(cross_region_only=True)))
+        return replace(details,
+            completed=raw_result is True,
+            warning=warnings[-1] if raw_result is True and warnings else None,
+        )
     else:
-        return TaskResult(completed=bool(runner()))
+        return replace(details, completed=bool(raw_result))
+
+
+def _invoke_account_action(runner: Callable[..., Any], *args, stop_event=None) -> TaskResult:
+    value, report = run_task_call(runner, *args, stop_event=stop_event, finish_current=True)
+    return TaskResult(
+        completed=bool(value) and not report.cancelled and report.exception is None,
+        result=value if isinstance(value, str) else None,
+        stage=report.stage, reason=report.reason, frame=report.frame,
+        failure_kind="cancelled" if report.cancelled else "exception" if report.exception else None,
+    )
 
 
 def _run_task_recovery(
@@ -243,20 +284,34 @@ def _run_task_recovery(
     stop_event: Any,
 ) -> tuple[bool, str]:
     """调用任务恢复器，并兼容布尔值与带 success/reason 的结果。"""
-    try:
-        result = recovery(stop_event)
+    result, report = run_task_call(lambda: recovery(stop_event), stop_event=stop_event)
+    if report.cancelled:
+        return False, "用户请求停止，已取消恢复"
+    if report.exception is None:
         success = bool(getattr(result, "success", result))
         reason = str(
             getattr(
                 result,
                 "reason",
-                "已恢复到庭院" if success else "未能恢复到庭院",
+                "已恢复到庭院" if success else report.reason or "未能恢复到庭院",
             )
         )
+        if not success and report.stage:
+            reason = f"{report.stage}：{reason}"
+        if not success and not getattr(result, "screenshot", None):
+            frame = getattr(result, "frame", None)
+            if frame is None:
+                frame = report.frame
+            capture_error_screenshot(
+                "task_recovery", getattr(result, "failure_code", None) or report.stage or "failed",
+                **({"frame": frame} if frame is not None else {}),
+            )
         return success, reason
-    except Exception as exc:
-        capture_error_screenshot("task_recovery", "exception")
-        return False, f"超时恢复发生异常：{exc}"
+    capture_error_screenshot(
+        "task_recovery", report.stage or "exception",
+        **({"frame": report.frame} if report.frame is not None else {}),
+    )
+    return False, f"超时恢复发生异常：{report.reason}"
 
 
 def _services_from_runtime_settings(

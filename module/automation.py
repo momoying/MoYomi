@@ -9,6 +9,8 @@ from pathlib import Path
 import cv2
 import numpy as np
 
+from module.task_execution import check_stopped, record_frame
+
 
 @contextmanager
 def _suppress_native_output():
@@ -558,6 +560,8 @@ def take_screenshot() -> np.ndarray | None:
     """
     global _mumu_capture, _mumu_capture_error, _last_screenshot_time, _latest_screenshot_frame
 
+    check_stopped()
+
     # 可选限速：避免上层循环过快时疯狂截图
     now = time.perf_counter()
     min_interval = float(config.get("screenshot_speed", 0) or 0)
@@ -579,6 +583,7 @@ def take_screenshot() -> np.ndarray | None:
             frame = cap.capture_frame()
             _last_screenshot_time = time.perf_counter()
             _latest_screenshot_frame = frame
+            record_frame(frame)
             return frame
 
         except Exception as e:
@@ -600,6 +605,7 @@ def take_screenshot() -> np.ndarray | None:
     if frame is not None:
         _last_screenshot_time = time.perf_counter()
         _latest_screenshot_frame = frame
+        record_frame(frame)
 
     return frame
 
@@ -663,6 +669,7 @@ def crop_and_match(top_left, bottom_right, template_path, screenshot_path=None, 
       frame = take_screenshot()
       crop_and_match(..., frame=frame)
     """
+    check_stopped()
     if frame is None:
         # 向后兼容：如果第 4 个参数传了路径，则从磁盘读取该截图。
         if isinstance(screenshot_path, str) and screenshot_path:
@@ -708,9 +715,11 @@ def crop_and_match(top_left, bottom_right, template_path, screenshot_path=None, 
 
 def _run_adb_device_command(arguments, timeout=8, label="ADB命令"):
     """执行设备命令；失败时强制重连一次并重试。"""
+    check_stopped()
     command = [adb_path, "-s", adb_port, *arguments]
     last_error = ""
     for attempt in range(2):
+        check_stopped()
         try:
             result = subprocess.run(
                 command,
@@ -765,11 +774,16 @@ def click_template_until_disappears(
     匹配框再次点击；只有模板消失后才返回 True。
     这样上层不会在游戏尚未接受点击时提前进入下一步。
     """
-    deadline = time.monotonic() + max(0.1, float(timeout))
+    deadline = time.monotonic() + max(0.0, float(timeout))
     current_rect = initial_rect
     attempts = 0
 
     def emit(message):
+        # 点击确认过程只供调试；正常输出由调用方的动作日志负责。
+        if not message.startswith(("[ERROR]", "[WARN]")):
+            if log_callback is None:
+                return
+            message = f"[DEBUG] {message}"
         if log_callback is None:
             print(message)
         else:

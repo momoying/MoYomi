@@ -12,12 +12,12 @@ from controller.runtime import _emit_event, print
 from controller.scheduler import build_weekly_work_queue
 from controller.state_store import *
 from controller.task_services import (
-    _invoke_task_runner,
-    _run_task_recovery,
+    _invoke_account_action,
     _services_from_runtime_settings,
 )
-from controller.types import ControllerServices, EventCallback, TaskResult
+from controller.types import ControllerServices, EventCallback
 from module.diagnostics import capture_error_screenshot
+from module.task_execution import run_task_call
 
 
 def run_weekly(
@@ -76,7 +76,12 @@ def run_weekly(
     if services.startup_recovery is not None:
         recovery_screenshot = None
         try:
-            recovery_result = services.startup_recovery()
+            recovery_result, report = run_task_call(services.startup_recovery, stop_event=stop_event, finish_current=True)
+            if report.cancelled:
+                _emit_event(event_callback, "controller_stopped")
+                return False
+            if report.exception:
+                raise report.exception
             recovery_success = bool(getattr(recovery_result, "success", recovery_result))
             recovery_screenshot = getattr(recovery_result, "screenshot", None)
             recovery_message = str(
@@ -88,7 +93,11 @@ def run_weekly(
         if not recovery_success:
             first_item = work_queue[0]
             if not recovery_screenshot:
-                capture_error_screenshot("startup_recovery", "failed")
+                frame = getattr(recovery_result, "frame", None) if report.exception is None else report.frame
+                if frame is None:
+                    frame = report.frame
+                capture_error_screenshot("startup_recovery", report.stage or "failed",
+                                         **({"frame": frame} if frame is not None else {}))
             _emit_event(
                 event_callback,
                 "error",
@@ -101,7 +110,6 @@ def run_weekly(
 
     previous_account: Optional[str] = None
     first_login = True
-    runner = services.task_runners[CONSIGNMENT_HOUSE_TASK]
     for item in work_queue:
         if stop_event is not None and stop_event.is_set():
             print("周常中控已安全停止")
@@ -119,15 +127,20 @@ def run_weekly(
             phase="select_account",
         )
         if first_login:
-            selected = services.select_account(account_name, False)
+            account_outcome = _invoke_account_action(services.select_account, account_name, False, stop_event=stop_event)
         elif previous_account != account_name:
-            selected = services.select_account(account_name, True)
+            account_outcome = _invoke_account_action(services.select_account, account_name, True, stop_event=stop_event)
         else:
-            selected = account_name if services.exit_to_login() else None
+            account_outcome = _invoke_account_action(services.exit_to_login, stop_event=stop_event)
+        selected = (account_outcome.result or account_name) if account_outcome.completed else None
         if selected is None:
-            message = f"无法选中账号 {account_name}"
+            if account_outcome.failure_kind == "cancelled":
+                _emit_event(event_callback, "controller_stopped")
+                return False
+            message = f"无法选中账号 {account_name}；{account_outcome.stage or '账号切换'}：{account_outcome.reason or '执行失败'}"
             if not (stop_event is not None and stop_event.is_set()):
-                capture_error_screenshot("account_switch", "select_failed")
+                capture_error_screenshot("account_switch", account_outcome.stage or "select_failed",
+                                         **({"frame": account_outcome.frame} if account_outcome.frame is not None else {}))
             _emit_event(
                 event_callback,
                 "error",
@@ -138,6 +151,9 @@ def run_weekly(
             )
             return False
 
+        if stop_event is not None and stop_event.is_set():
+            _emit_event(event_callback, "controller_stopped")
+            return False
         _emit_event(
             event_callback,
             "account_phase",
@@ -145,10 +161,15 @@ def run_weekly(
             system=system,
             phase="sign_in",
         )
-        if not services.sign_in(system, SAME_REGION):
-            message = f"{account_name} / {system} / 狐之宴 登录失败"
+        login_outcome = _invoke_account_action(services.sign_in, system, SAME_REGION, stop_event=stop_event)
+        if not login_outcome.completed:
+            if login_outcome.failure_kind == "cancelled":
+                _emit_event(event_callback, "controller_stopped")
+                return False
+            message = f"{account_name} / {system} / 狐之宴 登录失败；{login_outcome.stage or '登录'}：{login_outcome.reason or '执行失败'}"
             if not (stop_event is not None and stop_event.is_set()):
-                capture_error_screenshot("account_sign", "login_failed")
+                capture_error_screenshot("account_sign", login_outcome.stage or "login_failed",
+                                         **({"frame": login_outcome.frame} if login_outcome.frame is not None else {}))
             _emit_event(
                 event_callback,
                 "error",
@@ -159,72 +180,15 @@ def run_weekly(
             )
             return False
 
-        _emit_event(
-            event_callback,
-            "task_started",
-            account=account_name,
-            system=system,
-            region=SAME_REGION,
-            task=CONSIGNMENT_HOUSE_TASK,
-            run_index=1,
-            run_count=1,
-        )
-        outcome = TaskResult(completed=False, result=CONSIGNMENT_ERROR)
-        max_attempts = max(1, services.task_recovery_retries + 1)
-        for attempt_index in range(1, max_attempts + 1):
-            failure_stage = "failed"
-            try:
-                outcome = _invoke_task_runner(
-                    CONSIGNMENT_HOUSE_TASK,
-                    runner,
-                    1,
-                    1,
-                    daily_state["accounts"][account_name]["systems"][system],
-                )
-            except Exception as exc:
-                outcome = TaskResult(completed=False, result=CONSIGNMENT_ERROR)
-                failure_message = f"寄售屋执行异常：{exc}"
-                failure_stage = "exception"
-            else:
-                failure_message = "寄售屋执行失败"
+        # 日常与周常复用同一套失败留图、恢复及重试策略。
+        from controller.daily_runner import _execute_task
 
-            if outcome.completed:
-                break
-            if not (stop_event is not None and stop_event.is_set()):
-                capture_error_screenshot(
-                    CONSIGNMENT_HOUSE_TASK,
-                    failure_stage,
-                    attempt=attempt_index,
-                )
-            if attempt_index >= max_attempts:
-                _emit_event(
-                    event_callback,
-                    "error",
-                    account=account_name,
-                    system=system,
-                    task=CONSIGNMENT_HOUSE_TASK,
-                    phase="task",
-                    message=failure_message,
-                )
-                return False
-            if services.task_timeout_recovery is None:
-                return False
-            recovered, recovery_message = _run_task_recovery(
-                services.task_timeout_recovery,
-                stop_event,
-            )
-            if not recovered:
-                _emit_event(
-                    event_callback,
-                    "error",
-                    account=account_name,
-                    system=system,
-                    task=CONSIGNMENT_HOUSE_TASK,
-                    phase="task_recovery",
-                    message=f"{failure_message}；{recovery_message}",
-                )
-                return False
-            print(f"[INFO] {recovery_message}，重新执行寄售屋")
+        outcome = _execute_task(
+            item.tasks[0], item, daily_state, status_path, services,
+            now_provider, event_callback, stop_event,
+        )
+        if outcome is None:
+            return False
 
         completed_at = now_provider().astimezone().isoformat(timespec="seconds")
         result = outcome.result
@@ -248,6 +212,9 @@ def run_weekly(
             detail=detail,
             result=result,
         )
+        if stop_event is not None and stop_event.is_set():
+            _emit_event(event_callback, "controller_stopped")
+            return False
         previous_account = account_name
         first_login = False
 

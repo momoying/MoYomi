@@ -15,6 +15,7 @@ TASKS_DIR = PROJECT_ROOT / "tasks"
 RES_DIR = MODULE_DIR / "res"
 STARTUP_RES_DIR = RES_DIR / "startup_recovery"
 RECOVERY_RES_DIR = RES_DIR / "task_recovery"
+COMMON_UI_RES_DIR = RES_DIR / "common_ui"
 
 # 保留旧模块使用的目录别名。
 ASSET_DIR = STARTUP_RES_DIR
@@ -38,6 +39,77 @@ class RecoveryMatchSpec:
     threshold: float = 0.80
 
 
+class CommonUIAssets(TaskAssets):
+    """跨任务复用的常见阴阳师界面资源。"""
+
+    # 新版长确认键
+    I_CONFIRM = ImageAsset(
+        file=COMMON_UI_RES_DIR / "confirm.png",
+        name="common_confirm",
+    )
+
+    # 通用左上角返回按钮
+    I_BACK = ImageAsset(
+        file=COMMON_UI_RES_DIR / "back.png",
+        name="common_back",
+    )
+    # 一键返回庭院按钮
+    I_COURTYARD_BACK = ImageAsset(
+        file=COMMON_UI_RES_DIR / "courtyard_back.png",
+        name="common_courtyard_back",
+    )
+    # 庭院功能菜单卷轴
+    I_MENU_SCROLL = ImageAsset(
+        file=COMMON_UI_RES_DIR / "menu_scroll.png",
+        name="common_menu_scroll",
+    )
+    # 庭院商店入口
+    I_STORE_ENTRY = ImageAsset(
+        file=COMMON_UI_RES_DIR / "store_entry.png",
+        name="common_store_entry",
+    )
+    # 战斗胜利过渡画面
+    I_VICTORY_TRANSITION = ImageAsset(
+        file=COMMON_UI_RES_DIR / "victory_transition.png",
+        name="common_victory_transition",
+    )
+    # 战斗失败标记
+    I_DEFEAT = ImageAsset(
+        file=COMMON_UI_RES_DIR / "defeat.png",
+        name="common_defeat",
+    )
+    # 战斗准备按钮
+    I_PREPARE = ImageAsset(
+        file=COMMON_UI_RES_DIR / "prepare.png",
+        name="common_prepare",
+    )
+    # 庭院组队入口
+    I_TEAM = ImageAsset(
+        file=COMMON_UI_RES_DIR / "team.png",
+        name="common_team",
+    )
+    # 阵容已锁定标记
+    I_FORMATION_LOCKED = ImageAsset(
+        file=COMMON_UI_RES_DIR / "formation_locked.png",
+        name="common_formation_locked",
+    )
+    # 阵容未锁定标记
+    I_FORMATION_UNLOCKED = ImageAsset(
+        file=COMMON_UI_RES_DIR / "formation_unlocked.png",
+        name="common_formation_unlocked",
+    )
+    # 战斗奖励结算画面
+    I_REWARD = ImageAsset(
+        file=COMMON_UI_RES_DIR / "reward.png",
+        name="common_reward",
+    )
+    # 奖励领取成功标记
+    I_REWARD_SUCCESS = ImageAsset(
+        file=COMMON_UI_RES_DIR / "reward_success.png",
+        name="common_reward_success",
+    )
+
+
 class StartupAssets(TaskAssets):
     """程序启动时恢复到可执行状态所需的资源。"""
 
@@ -57,7 +129,7 @@ class StartupAssets(TaskAssets):
 
     # 一键返回庭院按钮
     I_COURTYARD_BACK = ImageAsset(
-        file=STARTUP_RES_DIR / "courtyard_back.png",
+        file=CommonUIAssets.I_COURTYARD_BACK.file,
         region=((60, 0), (180, 100)),
         threshold=0.88,
         name="courtyard_back",
@@ -72,7 +144,7 @@ class StartupAssets(TaskAssets):
 
     # 战斗准备按钮
     I_PREPARE_BUTTON = ImageAsset(
-        file=TASKS_DIR / "Exp" / "res" / "prepare.png",
+        file=CommonUIAssets.I_PREPARE.file,
         region=((1050, 490), (1280, 690)),
         name="prepare_button",
     )
@@ -84,20 +156,12 @@ class StartupAssets(TaskAssets):
         name="ready_room",
     )
 
-    # 退出房间确认弹窗
-    I_ROOM_EXIT_CONFIRM = ImageAsset(
-        file=TASKS_DIR / "Exp" / "res" / "exit_confirm.png",
+    # 房间与同心队退出共用同一种确认动作
+    I_EXIT_CONFIRM = ImageAsset(
+        file=CommonUIAssets.I_CONFIRM.file,
         region=((600, 350), (920, 520)),
         threshold=0.90,
-        name="room_exit_confirm",
-    )
-
-    # 退出组队确认弹窗
-    I_HEART_EXIT_CONFIRM = ImageAsset(
-        file=TASKS_DIR / "HeartTeam" / "res" / "confirm.png",
-        region=((600, 350), (900, 520)),
-        threshold=0.90,
-        name="heart_exit_confirm",
+        name="exit_confirm",
     )
 
     # 普通战斗结算界面
@@ -184,7 +248,7 @@ class StartupAssets(TaskAssets):
 
     # 奖励领取成功界面
     I_REWARD_SUCCESS = ImageAsset(
-        file=STARTUP_RES_DIR / "reward_success.png",
+        file=CommonUIAssets.I_REWARD_SUCCESS.file,
         region=((240, 0), (600, 120)),
         name="reward_success",
     )
@@ -205,7 +269,7 @@ class StartupAssets(TaskAssets):
 
     # 组队页面返回按钮
     I_EXP_BACK = ImageAsset(
-        file=TASKS_DIR / "Exp" / "res" / "back.png",
+        file=CommonUIAssets.I_BACK.file,
         region=((0, 0), (120, 100)),
         name="exp_back",
     )
@@ -256,8 +320,7 @@ class StartupAssets(TaskAssets):
         ("ready_room", "准备倒计时房间"),
     )
     ROOM_EXIT_CONFIRM_STATES = (
-        ("room_exit_confirm", "退出房间确认"),
-        ("heart_exit_confirm", "退出组队确认"),
+        ("exit_confirm", "退出确认"),
     )
     CLICK_ACTIONS = (
         ("courtyard_back", "一键返回庭院按钮"),
@@ -307,14 +370,14 @@ class RecoveryAssets(TaskAssets):
 
     # 返回庭院按钮
     I_COURTYARD = ImageAsset(
-        file=RECOVERY_RES_DIR / "courtyard.png",
+        file=CommonUIAssets.I_COURTYARD_BACK.file,
         region=((0, 0), (1280, 720)),
         name="courtyard",
     )
 
     # 通用返回按钮
     I_BACK = ImageAsset(
-        file=RECOVERY_RES_DIR / "back.png",
+        file=CommonUIAssets.I_BACK.file,
         region=((0, 0), (1280, 720)),
         name="back",
     )

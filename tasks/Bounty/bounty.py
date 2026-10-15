@@ -198,14 +198,16 @@ def _wait_for_template(
 
 
 def _wait_and_click(name: str, label: str, timeout: float) -> bool:
+    deadline = time.monotonic() + timeout
     _, rect, best_score = _wait_for_template(name, label, timeout)
-    if rect is None:
+    remaining = deadline - time.monotonic()
+    if rect is None or remaining <= 0:
         print(
             f"[ERROR] {timeout:.0f} 秒内未识别到{label}，"
             f"最高匹配分数 {_score_text(best_score)}"
         )
         return False
-    return _click_and_confirm(name, label, rect, timeout)
+    return _click_and_confirm(name, label, rect, remaining)
 
 
 def detect_magatama_collaboration(
@@ -320,16 +322,19 @@ def _check_all_bounties() -> Optional[str]:
 
 def check_bounty() -> BountyResult:
     """进入并确认悬赏页 → 检测同格勾玉协作 → 退出 → 返回结构化结果。"""
+    LOGGER.set_stage("进入悬赏页")
     utils.connect_to_mumu()
     print("开始检测悬赏")
 
     # 1. 先识别恒定入口，再确认进入悬赏页，避免把错误页面判为无协作。
+    entry_deadline = time.monotonic() + ENTRY_WAIT_SECONDS
     _, entry_rect, best_score = _wait_for_template(
         "bounty",
         "悬赏入口",
         ENTRY_WAIT_SECONDS,
     )
-    if entry_rect is None:
+    remaining = entry_deadline - time.monotonic()
+    if entry_rect is None or remaining <= 0:
         print(
             f"[ERROR] 未识别到恒定存在的悬赏入口，"
             f"最高匹配分数 {_score_text(best_score)}"
@@ -340,7 +345,7 @@ def check_bounty() -> BountyResult:
         "bounty",
         "悬赏入口",
         entry_rect,
-        PAGE_WAIT_SECONDS,
+        remaining,
     ):
         return BountyResult.ERROR
     _, page_back_rect, page_score = _wait_for_template(
@@ -356,9 +361,11 @@ def check_bounty() -> BountyResult:
         return BountyResult.ERROR
 
     # 2. 只认同一格中的协/享标记和勾玉，保留两类协作的区别。
+    LOGGER.set_stage("检测勾玉协作")
     collaboration_kind = _check_all_bounties()
 
     # 3. 先退出页面；退出失败仍返回 ERROR，交给中控恢复。
+    LOGGER.set_stage("退出悬赏页")
     if not _wait_and_click("back", "悬赏页退出按钮", BACK_WAIT_SECONDS):
         return BountyResult.ERROR
     print("已退出悬赏页")

@@ -141,8 +141,11 @@ def _wait_and_click(name: str, label: str, timeout: float) -> bool:
         if score is not None and (best_score is None or score > best_score):
             best_score = score
         if rect is not None:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
             print(f"识别到{label}，匹配分数 {score:.3f}")
-            if _click_and_confirm(name, label, rect, timeout):
+            if _click_and_confirm(name, label, rect, remaining):
                 return True
             return False
 
@@ -192,7 +195,9 @@ def _ensure_friend_menu_expanded() -> bool:
             best_scroll_score = scroll_score
         if scroll_rect is not None:
             print(f"识别到右下角卷轴，功能栏处于折叠状态，匹配分数 {scroll_score:.3f}")
-            remaining = max(0.1, deadline - time.monotonic())
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
             if _click_and_confirm("menu_scroll", "展开功能栏卷轴", scroll_rect, remaining):
                 print("右侧功能栏已展开")
                 return True
@@ -354,12 +359,15 @@ def _like_current_category(category: str, friend_number: Optional[int] = None) -
         ):
             best_like_score = like_score
         if like_rect is not None:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
             print(f"识别到{category_label}白色 Like，匹配分数 {like_score:.3f}")
             if not _click_and_confirm(
                 "like",
                 f"{category_label} Like",
                 like_rect,
-                LIKE_WAIT_SECONDS,
+                remaining,
             ):
                 return False
             return _wait_for_liked(category_label)
@@ -426,6 +434,7 @@ def _wait_for_main(timeout: float = MAIN_WAIT_SECONDS) -> bool:
 
 def run(cross_region_only: bool = False) -> bool:
     """进入好友页 → 确定类别顺序 → 分栏点赞并确认 → 返回庭院。"""
+    LOGGER.set_stage("进入好友页")
     utils.connect_to_mumu()
     mode_label = "仅跨区好友" if cross_region_only else "普通与跨区好友"
     print(f"开始好友点赞任务（{mode_label}），截图间隔 0.5 秒")
@@ -448,6 +457,7 @@ def run(cross_region_only: bool = False) -> bool:
 
     # 3. 必要时切换类别，等待已点赞标志确认成功后才处理下一栏。
     for index, category in enumerate(categories):
+        LOGGER.set_stage("跨区好友点赞" if category == "cross_region" else "普通好友点赞")
         if index == 0 and category != first_category:
             if not _switch_category(category):
                 return False
@@ -461,6 +471,7 @@ def run(cross_region_only: bool = False) -> bool:
             return False
 
     # 4. 关闭好友页，并以主界面标志确认返回庭院。
+    LOGGER.set_stage("返回庭院")
     if not _wait_and_click("back", "返回", BACK_WAIT_SECONDS):
         return False
     if not _wait_for_main():

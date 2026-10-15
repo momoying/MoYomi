@@ -207,9 +207,12 @@ class ToolsPageMixin:
 
 
     def _tool_worker(self, tool_name: str) -> None:
+        from module.task_execution import ExecutionReport, run_task_call
+
         writer = LineWriter(lambda line: self.append_tool_log("INFO", line))
         success = False
         failure_stage = "failed"
+        report = ExecutionReport(stage="初始化工具")
         previous_interval: Optional[float] = None
         try:
             from module import automation
@@ -247,37 +250,45 @@ class ToolsPageMixin:
                 )
             with redirect_stdout(writer), redirect_stderr(writer):
                 if tool_name == "secret_battle":
-                    result = module.run(
-                        stop_event=self.tool_stop_event,
-                        attempts=int(self.settings["secret_battle_attempts"]),
+                    runner = lambda: module.run(
+                        stop_event=self.tool_stop_event, attempts=int(self.settings["secret_battle_attempts"]),
                         attempts_callback=self._queue_secret_attempts,
                     )
                 elif tool_name == "market_sniper":
-                    result = module.run(
-                        refresh_count=int(
-                            self.settings["market_sniper_refresh_count"]
-                        ),
+                    runner = lambda: module.run(
+                        refresh_count=int(self.settings["market_sniper_refresh_count"]),
                         stop_event=self.tool_stop_event,
                     )
                 else:
-                    result = module.run(stop_event=self.tool_stop_event)
-                success = bool(result)
+                    runner = lambda: module.run(stop_event=self.tool_stop_event)
+                result, report = run_task_call(runner, stop_event=self.tool_stop_event)
+                if report.exception is not None and not report.cancelled:
+                    raise report.exception
+                success = bool(getattr(result, "completed", result)) or report.cancelled
+                if not success:
+                    self.append_tool_log("ERROR", f"{TOOL_LABELS.get(tool_name, tool_name)}/{report.stage or '执行'}：{report.reason or '执行失败'}")
         except Exception as exc:
             failure_stage = "exception"
-            self.append_tool_log(
-                "ERROR",
-                f"{TOOL_LABELS.get(tool_name, tool_name)}发生异常：{exc}",
-            )
-            self._report_ui_exception(
-                f"小工具线程 {TOOL_LABELS.get(tool_name, tool_name)}",
-                exc,
-            )
+            if self.tool_stop_event.is_set():
+                success = True
+            else:
+                self.append_tool_log(
+                    "ERROR",
+                    f"{TOOL_LABELS.get(tool_name, tool_name)}/{report.stage or '初始化'}发生异常：{exc}",
+                )
+                self._report_ui_exception(
+                    f"小工具线程 {TOOL_LABELS.get(tool_name, tool_name)}",
+                    exc,
+                )
         finally:
             if not success and not self.tool_stop_event.is_set():
                 try:
                     from module.diagnostics import capture_error_screenshot
 
-                    capture_error_screenshot(tool_name, failure_stage)
+                    capture_error_screenshot(
+                        tool_name, report.stage or failure_stage,
+                        **({"frame": report.frame} if report.frame is not None else {}),
+                    )
                 except Exception as exc:
                     self.append_tool_log("ERROR", f"报错截图保存失败：{exc}")
             if previous_interval is not None:

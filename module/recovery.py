@@ -5,7 +5,7 @@ from __future__ import annotations
 import random
 import sys
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional, Tuple
 
@@ -23,6 +23,7 @@ from module.base.device import TaskDevice
 from module.assets import RecoveryAssets, RecoveryMatchSpec as MatchSpec, StartupAssets
 from module.diagnostics import capture_error_screenshot, prune_error_screenshots
 from module.logging import TaskLogger
+from module.task_execution import in_task_call, report_failure
 
 
 ASSETS = RecoveryAssets
@@ -46,7 +47,7 @@ MAX_STALLED_CLICKS = 3
 MAX_RECOVERY_ACTIONS = 12
 
 OVERLAY_STATES = (
-    "room_exit_confirm", "heart_exit_confirm", "phone_bind_cancel",
+    "exit_confirm", "phone_bind_cancel",
     "phone_bind", "sign_in_close",
 )
 ACCOUNT_STATES = ("login", "account_list", "ios", "android")
@@ -76,6 +77,8 @@ class RecoveryResult:
     success: bool
     reason: str
     screenshot: Optional[str] = None
+    frame: object = field(default=None, repr=False, compare=False)
+    failure_code: Optional[str] = None
 
 
 @dataclass(frozen=True)
@@ -264,6 +267,9 @@ def _save_failure_screenshot(
     stage: str,
     keep_count: int,
 ) -> Optional[str]:
+    if in_task_call():
+        report_failure(frame=frame)
+        return None
     return capture_error_screenshot(
         "task_recovery",
         stage,
@@ -280,6 +286,7 @@ def _attempt_recovery_to_courtyard(
     allow_completed_reward: bool = False,
 ) -> _RecoveryAttempt:
     """识别并复核当前页面，每轮最多执行一次该页面允许的动作。"""
+    LOGGER.set_stage("通用庭院恢复")
     deadline = time.monotonic() + timeout
     unknown_since: Optional[float] = None
     last_frame = None
@@ -468,7 +475,7 @@ def recover_to_courtyard(
             )
         except Exception as exc:
             LOGGER.warning("留图", f"保存恢复失败现场出错：{exc}")
-    return RecoveryResult(attempt.success, attempt.reason, screenshot)
+    return RecoveryResult(attempt.success, attempt.reason, screenshot, attempt.frame, attempt.failure_code)
 
 
 if __name__ == "__main__":

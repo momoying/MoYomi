@@ -176,11 +176,17 @@ def _wait_and_click(
         if score is not None and (best_score is None or score > best_score):
             best_score = score
         if rect is not None:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
             print(f"识别到{label}，匹配分数 {score:.3f}")
             if delay_before_click > 0:
                 print(f"等待 {delay_before_click:g} 秒后点击{label}")
-                time.sleep(delay_before_click)
-            if _click_and_confirm(name, label, rect, timeout):
+                time.sleep(min(delay_before_click, remaining))
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    break
+            if _click_and_confirm(name, label, rect, remaining):
                 return True
             return False
 
@@ -230,7 +236,9 @@ def _ensure_team_menu_expanded() -> bool:
             best_scroll_score = scroll_score
         if scroll_rect is not None:
             print(f"识别到右下角卷轴，功能栏处于折叠状态，匹配分数 {scroll_score:.3f}")
-            remaining = max(0.1, deadline - time.monotonic())
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
             if _click_and_confirm("menu_scroll", "展开功能栏卷轴", scroll_rect, remaining):
                 print("右侧功能栏已展开")
                 return True
@@ -421,6 +429,7 @@ def _wait_for_join_outcome() -> Tuple[str, Optional[Rect]]:
 
 
 def _click_prepare_rect(prepare_rect: Rect) -> bool:
+    LOGGER.set_stage("准备战斗")
     print(f"等待 {PREPARE_CLICK_DELAY:g} 秒后点击准备")
     time.sleep(PREPARE_CLICK_DELAY)
     if not _click_and_confirm(
@@ -464,7 +473,9 @@ def _leave_waiting_room(initial_frame=None) -> bool:
                 _back_is_active(current, gray_back_rect)
             continue
         print(f"识别到退出组队确认按钮，匹配分数 {confirm_score:.3f}")
-        remaining = max(0.1, confirm_deadline - time.monotonic())
+        remaining = confirm_deadline - time.monotonic()
+        if remaining <= 0:
+            return False
         if not _click_and_confirm(
             "exit_confirm",
             "退出组队确定",
@@ -877,6 +888,7 @@ def _return_to_main(timeout: float = MAIN_WAIT_SECONDS) -> bool:
 
 def run() -> bool:
     """进入经验妖怪组队页 → 寻队并战斗（失败重试）→ 返回庭院。"""
+    LOGGER.set_stage("进入经验妖怪列表")
     utils.connect_to_mumu()
 
     print("开始经验妖怪任务，截图间隔 0.5 秒")
@@ -890,6 +902,7 @@ def run() -> bool:
     # 2. 持续寻队；战败后的无队可入不能按今日已完成处理。
     failed_battles = 0
     while True:
+        LOGGER.set_stage("寻找并加入队伍")
         join_result = _join_team()
         if join_result is None:
             if failed_battles:
@@ -901,6 +914,7 @@ def run() -> bool:
             return False
 
         # 3. 等待战斗结果；战败刷新后重新寻队，识别错误立即交给中控。
+        LOGGER.set_stage("等待战斗结果")
         battle_result = _wait_for_battle_finish()
         if battle_result == "error":
             return False
@@ -909,6 +923,7 @@ def run() -> bool:
             print(f"经验妖怪第 {failed_battles} 场战斗失败，已刷新并重新寻找队伍")
             continue
         # 4. 战斗成功后确认返回主界面，才报告任务完成。
+        LOGGER.set_stage("返回庭院")
         return _return_to_main()
 
 

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from module.assets import CommonUIAssets
 from module.base.assets import ClickAsset, ImageAsset, TaskAssets
 
 
@@ -65,7 +66,7 @@ class OneTapDailyAssets(TaskAssets):
 
     # 领取成功弹窗
     I_REWARD_SUCCESS = ImageAsset(
-        file=RES_DIR / "reward_success.png",
+        file=CommonUIAssets.I_REWARD_SUCCESS.file,
         region=((240, 0), (600, 120)),
         threshold=0.8,
         name='reward_success',

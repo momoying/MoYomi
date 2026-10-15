@@ -528,7 +528,7 @@ class DailyPageMixin:
 
 
     def _refresh_task_summary(self) -> None:
-        unfinished_statuses = {"pending", "active", "warning", "error"}
+        unfinished_statuses = {"pending", "active", "error"}
         due_systems = sum(
             any(
                 view.status in unfinished_statuses
@@ -972,8 +972,8 @@ class DailyPageMixin:
         self.start_button.disabled = True
         self.start_button.content = "停止中"
         if self.current_key in self.cards:
-            self.cards[self.current_key].set_phase("warning", "等待当前步骤结束")
-        self.append_log("WARN", "已请求安全停止，当前登录或任务阶段结束后生效")
+            self.cards[self.current_key].set_phase("warning", "等待当前登录或任务完成")
+        self.append_log("WARN", "已请求安全停止，等待当前登录或任务执行结束；不会启动后续任务")
         self._safe_update()
 
 
@@ -1044,10 +1044,10 @@ class DailyPageMixin:
         # 残留，后续刷新布局时看起来像错位或卡住。
         self.current_key = None
         self.refresh_cards(update=False)
-        if success:
+        if stopped:
+            self._append_log_now("WARN", "当前调用已结束，本轮任务已安全停止")
+        elif success:
             self._append_log_now("SUCCESS", "本轮到期任务已处理完成")
-        elif stopped:
-            self._append_log_now("WARN", "本轮任务已停止")
         else:
             self._append_log_now(
                 "ERROR",
@@ -1080,16 +1080,39 @@ class DailyPageMixin:
             run_index = event.get("run_index", 1)
             run_count = event.get("run_count", 1)
             detail = "正在执行"
-            if run_count > 1:
+            if task_name == controller.COOP_REWARD_TASK:
+                battle_index = event.get("battle_index", run_index)
+                battle_target = event.get("battle_target", run_count)
+                detail = f"第 {battle_index}/{battle_target} 场"
+            elif run_count > 1:
                 detail += f" · {run_index}/{run_count}"
             card.task_views[task_name].set_status("active", detail)
             if task_name in {controller.BOUNTY_TASK, controller.MERCHANT_TASK}:
                 card.task_views[task_name].set_highlight(False)
             card.set_phase("active", f"正在执行：{controller.TASK_LABELS[task_name]}")
+        elif event_type == "task_battle_progress" and card is not None:
+            task_name = event.get("task")
+            if task_name in card.task_views:
+                completed = int(event.get("completed", 0))
+                target = int(event.get("target", 0))
+                card.task_views[task_name].set_status(
+                    "active",
+                    (
+                        f"{completed}/{target} 场"
+                        if task_name == controller.COOP_REWARD_TASK
+                        else f"进度 · {completed}/{target} 场"
+                    ),
+                )
         elif event_type == "task_completed" and card is not None:
             task_name = event["task"]
-            detail = event.get("detail") or "本轮已完成"
-            card.task_views[task_name].set_status("done", detail)
+            warning = event.get("warning")
+            detail = warning or event.get("detail") or "本轮已完成"
+            if task_name == controller.COOP_REWARD_TASK and not warning and not event.get("detail"):
+                detail = "已完成"
+            card.task_views[task_name].set_status(
+                "warning" if warning else "done",
+                detail,
+            )
             if task_name == controller.BOUNTY_TASK:
                 bounty_style = BOUNTY_HIGHLIGHT_STYLES.get(event.get("result"))
                 card.task_views[task_name].set_highlight(

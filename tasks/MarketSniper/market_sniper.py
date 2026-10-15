@@ -162,6 +162,7 @@ def _first_row_rect(corner_rect: Rect) -> Rect:
 
 
 def _buy_first_listing(row_corner: Rect, stop_event) -> bool:
+    LOGGER.set_stage("打开商品购买弹窗")
     row_rect = _first_row_rect(row_corner)
     print("发现寄售商品，随机点击当前列表第一行")
     _click_random(row_rect, "第一行寄售商品")
@@ -174,6 +175,7 @@ def _buy_first_listing(row_corner: Rect, stop_event) -> bool:
         return False
 
     print("购买弹窗已打开，只点击一次购买按钮")
+    LOGGER.set_stage("购买商品并确认关闭")
     _click_random(ASSETS.PURCHASE_REGION, "购买商品")
     _, closed = _wait_for_template(
         "quantity_minus", stop_event, DIALOG_WAIT_SECONDS, visible=False,
@@ -186,6 +188,7 @@ def _buy_first_listing(row_corner: Rect, stop_event) -> bool:
 
 def run(refresh_count: int, stop_event=None) -> bool:
     """最多刷新指定次数；发现商品后只购买第一行的一件并结束。"""
+    LOGGER.set_stage("校验抢购参数")
     try:
         refresh_count = int(refresh_count)
     except (TypeError, ValueError):
@@ -197,6 +200,7 @@ def run(refresh_count: int, stop_event=None) -> bool:
 
     utils.connect_to_mumu()
     print(f"开始抢商品，最多刷新 {refresh_count} 次")
+    LOGGER.set_stage("检查寄售列表")
     _click_random(ASSETS.COLLECTION_PREVIEW_REGION, "藏品预览")
     state, row_corner = _wait_for_listing(stop_event, PAGE_WAIT_SECONDS)
     if state is None:
@@ -217,6 +221,7 @@ def run(refresh_count: int, stop_event=None) -> bool:
         )
         if _wait_or_stop(stop_event, delay):
             return False
+        LOGGER.set_stage(f"刷新寄售列表第 {refreshes + 1}/{refresh_count} 次")
         _click_random(ASSETS.REFRESH_REGION, "刷新寄售列表")
         refreshes += 1
         state, row_corner = _wait_for_listing(stop_event, PAGE_WAIT_SECONDS)

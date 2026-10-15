@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from module.assets import CommonUIAssets
 from module.base.assets import ClickAsset, ImageAsset, TaskAssets
 
 
@@ -57,7 +58,7 @@ class MailAssets(TaskAssets):
 
     # 确认按钮
     I_CONFIRM = ImageAsset(
-        file=RES_DIR / "confirm.png",
+        file=CommonUIAssets.I_CONFIRM.file,
         region=((600, 480), (930, 670)),
         threshold=0.86,
         name='confirm',

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from module.assets import CommonUIAssets
 from module.base.assets import ClickAsset, ImageAsset, TaskAssets
 
 
@@ -33,7 +34,7 @@ class SecretBattleAssets(TaskAssets):
 
     # 奖励结算界面
     I_REWARD = ImageAsset(
-        file=RES_DIR / "battle_reward.png",
+        file=CommonUIAssets.I_REWARD.file,
         region=((300, 250), (980, 720)),
         threshold=0.8,
         name='reward',
@@ -49,7 +50,7 @@ class SecretBattleAssets(TaskAssets):
 
     # 准备按钮
     I_PREPARE = ImageAsset(
-        file=RES_DIR / "battle_prepare.png",
+        file=CommonUIAssets.I_PREPARE.file,
         region=((1020, 450), (1280, 720)),
         threshold=0.8,
         name='prepare',

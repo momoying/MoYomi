@@ -16,9 +16,12 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from module import automation as utils
 from module.base.device import TaskDevice
+from module.logging import TaskLogger
 
 
-DEVICE = TaskDevice(utils)
+LOGGER = TaskLogger("一键秘闻")
+DEVICE = TaskDevice(utils, LOGGER)
+print = LOGGER.legacy_print
 
 
 from tasks.SecretBattle.assets import SecretBattleAssets
@@ -100,6 +103,7 @@ def run(
     attempts_callback: Optional[AttemptsCallback] = None,
 ) -> bool:
     """校验协战次数 → 挑战扣次 → 准备与战斗 → 领奖后继续；失败或耗尽时停止。"""
+    LOGGER.set_stage("校验协战次数")
     # 1. 先校验次数并连接模拟器，避免无额度时发起挑战。
     remaining = int(attempts)
     if remaining <= 0:
@@ -114,8 +118,12 @@ def run(
     state = "challenge"
     unknown_frames = 0
     battle_started_at = 0.0
+    prepare_clicks = 0
 
     while stop_event is None or not stop_event.is_set():
+        if state == "battle" and time.monotonic() - battle_started_at >= BATTLE_TIMEOUT_SECONDS:
+            print("[ERROR] 战斗超过 300 秒仍未识别到成功或失败界面，任务终止")
+            return False
         frame = DEVICE.screenshot()
         if frame is None:
             print("[WARN] 截图失败，等待下一次检测")
@@ -123,6 +131,7 @@ def run(
 
         # 2. 挑战阶段先检查已获得奖励标志，再判断额度和挑战按钮。
         if state == "challenge":
+            LOGGER.set_stage("发起秘闻挑战")
             obtained_score, obtained_rect = _match(
                 frame,
                 OBTAINED_TEMPLATE,
@@ -166,6 +175,8 @@ def run(
             )
             state = "battle"
             battle_started_at = time.monotonic()
+            prepare_clicks = 0
+            LOGGER.set_stage("准备及等待战斗")
             continue
 
         # 3. 战斗阶段优先检查失败，再处理准备和奖励，未知画面受总战斗超时约束。
@@ -189,8 +200,12 @@ def run(
             PREPARE_THRESHOLD,
         )
         if prepare_rect is not None:
+            if prepare_clicks >= 3:
+                print("[ERROR] 准备按钮点击 3 次后仍可见，任务终止")
+                return False
             x, y = _random_inner_point(prepare_rect)
             DEVICE.click(x, y)
+            prepare_clicks += 1
             print(
                 "[ACTION] 识别并点击准备，"
                 f"匹配分数 {prepare_score:.3f}"
@@ -205,6 +220,7 @@ def run(
         )
         # 4. 关闭奖励后切回挑战阶段，下一帧重新判断是否继续。
         if reward_rect is not None:
+            LOGGER.set_stage("领取战斗奖励")
             print(f"[SUCCESS] 检测到战斗奖励，匹配分数 {reward_score:.3f}")
             _click_blank()
             time.sleep(random.uniform(0.3,0.5))
@@ -212,10 +228,6 @@ def run(
             state = "challenge"
             unknown_frames = 0
             continue
-
-        if time.monotonic() - battle_started_at >= BATTLE_TIMEOUT_SECONDS:
-            print("[ERROR] 战斗超过 300 秒仍未识别到成功或失败界面，任务终止")
-            return False
 
     print("[INFO] 一键秘闻已安全停止")
     return True

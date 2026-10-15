@@ -1,0 +1,51 @@
+# MoYomi: enable only read tools for repositories, Issues, PRs and Actions.
+# GitHub connector ID is taken from the installed plugin's .app.json.
+# New tools stay disabled until explicitly added to this allowlist.
+# See https://learn.chatgpt.com/docs/config-file/config-reference
+
+[apps.connector_76869538009648d5b282a4bb21c3d157]
+enabled = true
+default_tools_enabled = false
+
+[apps.connector_76869538009648d5b282a4bb21c3d157.tools]
+"github.compare_commits" = { enabled = true }
+"github.download_workflow_artifact" = { enabled = true }
+"github.fetch" = { enabled = true }
+"github.fetch_blob" = { enabled = true }
+"github.fetch_commit" = { enabled = true }
+"github.fetch_commit_workflow_runs" = { enabled = true }
+"github.fetch_file" = { enabled = true }
+"github.fetch_issue" = { enabled = true }
+"github.fetch_issue_comments" = { enabled = true }
+"github.fetch_pr" = { enabled = true }
+"github.fetch_pr_comments" = { enabled = true }
+"github.fetch_pr_file_patch" = { enabled = true }
+"github.fetch_pr_patch" = { enabled = true }
+"github.fetch_workflow_job_logs" = { enabled = true }
+"github.fetch_workflow_job_steps" = { enabled = true }
+"github.fetch_workflow_run_artifacts" = { enabled = true }
+"github.fetch_workflow_run_jobs" = { enabled = true }
+"github.get_commit_combined_status" = { enabled = true }
+"github.get_issue_comment_reactions" = { enabled = true }
+"github.get_pr_diff" = { enabled = true }
+"github.get_pr_info" = { enabled = true }
+"github.get_pr_reactions" = { enabled = true }
+"github.get_pr_review_comment_reactions" = { enabled = true }
+"github.get_repo" = { enabled = true }
+"github.get_repo_collaborator_permission" = { enabled = true }
+"github.get_users_recent_prs_in_repo" = { enabled = true }
+"github.list_pr_changed_filenames" = { enabled = true }
+"github.list_pull_request_review_threads" = { enabled = true }
+"github.list_pull_request_reviews" = { enabled = true }
+"github.list_recent_issues" = { enabled = true }
+"github.list_repositories" = { enabled = true }
+"github.list_repositories_by_affiliation" = { enabled = true }
+"github.list_repositories_by_installation" = { enabled = true }
+"github.search" = { enabled = true }
+"github.search_branches" = { enabled = true }
+"github.search_commits" = { enabled = true }
+"github.search_installed_repositories_streaming" = { enabled = true }
+"github.search_installed_repositories_v2" = { enabled = true }
+"github.search_issues" = { enabled = true }
+"github.search_prs" = { enabled = true }
+"github.search_repositories" = { enabled = true }

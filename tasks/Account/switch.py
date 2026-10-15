@@ -23,7 +23,7 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from module import automation as utils
 from module.base.device import TaskDevice
-from module.diagnostics import capture_error_screenshot
+from module.task_execution import report_failure
 from module.logging import TaskLogger
 from module.model_paths import OCR_MODEL_DIR
 
@@ -180,12 +180,8 @@ def _take_frame():
     return frame
 
 
-def _save_timeout_screenshot(stage: str, frame=None) -> Optional[Path]:
-    saved_path = capture_error_screenshot("account_switch", stage, frame=frame)
-    if saved_path is not None:
-        print(f"账号切换报错截图已保存: {saved_path}")
-        return Path(saved_path)
-    return None
+def _report_timeout(stage: str, frame=None) -> None:
+    report_failure(frame=frame)
 
 
 def _wait_and_click(name: str, label: str, timeout: float) -> bool:
@@ -203,17 +199,20 @@ def _wait_and_click(name: str, label: str, timeout: float) -> bool:
         if score is not None and (best_score is None or score > best_score):
             best_score = score
         if rect is not None:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
             print(f"识别到{label}，匹配分数 {score:.3f}")
-            if _click_and_confirm(name, label, rect, timeout):
+            if _click_and_confirm(name, label, rect, remaining):
                 return True
-            _save_timeout_screenshot(f"confirm_{name}")
+            _report_timeout(f"confirm_{name}")
             return False
 
     print(
         f"[ERROR] {timeout:.0f} 秒内未识别到{label}，"
         f"最高匹配分数 {_score_text(best_score)}，要求 {MATCH_THRESHOLD:.2f}"
     )
-    _save_timeout_screenshot(f"wait_{name}", last_frame)
+    _report_timeout(f"wait_{name}", last_frame)
     return False
 
 
@@ -468,7 +467,7 @@ def open_account_list() -> tuple[bool, Optional[AccountEntry], Optional[object]]
         print("登录按钮仍在，继续点击上方账号白框")
 
     print(f"[ERROR] 连续 {ACCOUNT_LIST_OPEN_ATTEMPTS} 次点击后登录按钮仍未消失")
-    _save_timeout_screenshot("open_account_list", last_frame)
+    _report_timeout("open_account_list", last_frame)
     return False, current_account, last_frame
 
 
@@ -593,6 +592,7 @@ def find_account_in_list(target_account: str, initial_frame=None) -> AccountScan
 
 def exit_to_login() -> bool:
     """依次打开设置、用户中心并点击切换账号。"""
+    LOGGER.set_stage("退出当前账号")
     utils.connect_to_mumu()
     print("开始退出当前账号，截图间隔 0.5 秒")
 
@@ -630,8 +630,9 @@ def exit_to_login() -> bool:
             f"[ERROR] {MAIN_READY_WAIT_SECONDS:.0f} 秒内未打开用户中心，"
             f"最高匹配分数 {_score_text(best_score)}"
         )
-        _save_timeout_screenshot("wait_center", last_frame)
+        _report_timeout("wait_center", last_frame)
         return False
+    LOGGER.set_stage("返回登录页")
     if not _wait_and_click("switch_account", "切换账号", PAGE_WAIT_SECONDS):
         return False
 
@@ -647,6 +648,7 @@ def select_account(target_account: str, exit_current: bool = False) -> Optional[
     exit_current=False 用于中控首次启动（调用方保证当前已在登录页）；后续切换账号时传 True。
     """
     # 1. 规范化目标账号；需要切换时先退出当前登录。
+    LOGGER.set_stage("选择目标账号")
     target = _normalize_account(target_account)
     if exit_current and not exit_to_login():
         return None
@@ -663,6 +665,7 @@ def select_account(target_account: str, exit_current: bool = False) -> Optional[
             return target_account
 
     # 3. 打开列表并按白名单定向查找；识别不完整时停止选择。
+    LOGGER.set_stage("查找目标账号")
     opened, _, list_frame = open_account_list()
     if not opened:
         return None
@@ -672,6 +675,7 @@ def select_account(target_account: str, exit_current: bool = False) -> Optional[
         return None
 
     # 4. 点击目标行并确认回到登录页，此处不执行登录。
+    LOGGER.set_stage("确认账号选择")
     if not _select_account_row_and_confirm(
         result.entry.click_rect,
         f"账号 {result.entry.name}",
@@ -692,6 +696,7 @@ def select_next_account() -> Optional[str]:
         return None
 
     # 2. 按白名单扫描首个未见账号；扫描停止原因不能当成成功。
+    LOGGER.set_stage("扫描账号列表")
     known_accounts = [current_account.name] if current_account is not None else []
     result = scan_account_list(known_accounts=known_accounts, initial_frame=list_frame)
     if result.reason != "new_account" or result.entry is None:

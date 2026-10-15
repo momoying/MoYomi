@@ -129,8 +129,11 @@ def _wait_and_click(name: str, label: str, timeout: float) -> bool:
         if score is not None and (best_score is None or score > best_score):
             best_score = score
         if rect is not None:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
             print(f"识别到{label}，匹配分数 {score:.3f}")
-            if _click_and_confirm(name, label, rect, timeout):
+            if _click_and_confirm(name, label, rect, remaining):
                 return True
             return False
 
@@ -246,6 +249,7 @@ def _back_is_active(frame, rect: Rect) -> bool:
 
 
 def _close_reward_success(rect: Rect, timeout: float) -> bool:
+    deadline = time.monotonic() + timeout
     click_index = 0
 
     def click_next_blank(_current_rect: Rect) -> None:
@@ -257,7 +261,10 @@ def _close_reward_success(rect: Rect, timeout: float) -> bool:
         _click_rect(region, f"领取成功弹窗右侧外部空白区域 {click_index}")
 
     print(f"等待 {REWARD_READY_DELAY_SECONDS:g} 秒，让奖励界面完成动画")
-    time.sleep(REWARD_READY_DELAY_SECONDS)
+    time.sleep(min(REWARD_READY_DELAY_SECONDS, max(0.0, deadline - time.monotonic())))
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        return False
     top_left, bottom_right = REGIONS["reward_success"]
     return DEVICE.click_until_disappears(
         top_left,
@@ -265,7 +272,7 @@ def _close_reward_success(rect: Rect, timeout: float) -> bool:
         TEMPLATES["reward_success"],
         rect,
         threshold=MATCH_THRESHOLD,
-        timeout=timeout,
+        timeout=remaining,
         label="领取成功弹窗",
         click_callback=click_next_blank,
         still_visible_delay=REWARD_RETRY_DELAY_SECONDS,
@@ -275,6 +282,7 @@ def _close_reward_success(rect: Rect, timeout: float) -> bool:
 
 def _complete_one_tap_and_exit() -> bool:
     """按领取判断、领奖处理、安全退出三个阶段完成一键日常。"""
+    LOGGER.set_stage("确认日常任务页")
     # 1. 页面标题确认后快速判断页签，避免为特殊页等待一键标志超时。
     deadline = time.monotonic() + POST_ONE_TAP_TIMEOUT_SECONDS
     one_tap_rect = _ensure_daily_one_tap(deadline)
@@ -290,6 +298,7 @@ def _complete_one_tap_and_exit() -> bool:
     loading_logged = False
     back_exhausted_logged = False
     print("识别到一键完成")
+    LOGGER.set_stage("领取日常奖励")
     _click_rect(one_tap_rect, "一键完成")
     print(
         f"第 {claim_round}/{MAX_CLAIM_ROUNDS} 轮领取："
@@ -312,8 +321,11 @@ def _complete_one_tap_and_exit() -> bool:
         # 签到和奖励弹窗在所有阶段都优先处理。
         sign_score, sign_rect = _match(frame, "sign_in_close")
         if sign_rect is not None:
+            LOGGER.set_stage("处理签到弹窗")
             print(f"识别到每日签到关闭按钮，匹配分数 {sign_score:.3f}")
-            remaining = min(STATE_CONFIRM_SECONDS, max(0.1, deadline - time.monotonic()))
+            remaining = min(STATE_CONFIRM_SECONDS, deadline - time.monotonic())
+            if remaining <= 0:
+                break
             if not _click_and_confirm(
                 "sign_in_close",
                 "每日签到关闭按钮",
@@ -329,8 +341,11 @@ def _complete_one_tap_and_exit() -> bool:
 
         reward_score, reward_rect = _match(frame, "reward_success")
         if reward_rect is not None:
+            LOGGER.set_stage("领取日常奖励")
             print(f"识别到领取成功弹窗，匹配分数 {reward_score:.3f}")
-            remaining = min(REWARD_CONFIRM_SECONDS, max(0.1, deadline - time.monotonic()))
+            remaining = min(REWARD_CONFIRM_SECONDS, deadline - time.monotonic())
+            if remaining <= 0:
+                break
             if not _close_reward_success(reward_rect, remaining):
                 return False
             if claim_round < MAX_CLAIM_ROUNDS:
@@ -349,6 +364,7 @@ def _complete_one_tap_and_exit() -> bool:
 
         # 3. 首轮奖励后复核顶部完成标志，未完成才允许第二轮领取。
         if phase == "verify_completion":
+            LOGGER.set_stage("复核日常完成状态")
             completed_score, completed_rect = _match(frame, "completed")
             if completed_rect is not None:
                 print(
@@ -372,6 +388,7 @@ def _complete_one_tap_and_exit() -> bool:
                 )
                 return False
             claim_round += 1
+            LOGGER.set_stage("领取日常奖励")
             one_tap_clicks = 1
             phase = "claim"
             completion_check_deadline = None
@@ -422,6 +439,7 @@ def _complete_one_tap_and_exit() -> bool:
 
         # 4. 页面变灰表示请求已受理，仅等待弹窗，避免重复领取或误点返回。
         if phase == "loading":
+            LOGGER.set_stage("等待奖励发放")
             if not loading_logged:
                 print("奖励发放处理中，暂停点击并持续等待弹窗")
                 loading_logged = True
@@ -430,6 +448,7 @@ def _complete_one_tap_and_exit() -> bool:
 
         # 5. 返回按钮恢复正常颜色后有限补点，下一帧确认主界面才算成功。
         if phase == "exit" and back_rect is not None:
+            LOGGER.set_stage("返回庭院")
             if not _back_is_active(frame, back_rect):
                 time.sleep(SCREENSHOT_INTERVAL)
                 continue
@@ -454,6 +473,7 @@ def _complete_one_tap_and_exit() -> bool:
 
 def run() -> bool:
     """打开任务列表 → 一键领取并处理弹窗 → 确认退出。"""
+    LOGGER.set_stage("进入日常任务页")
     utils.connect_to_mumu()
     print("开始一键日常任务")
     # 1. 确认任务列表入口点击生效后，才开始领取。

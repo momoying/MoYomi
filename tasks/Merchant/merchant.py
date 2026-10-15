@@ -459,10 +459,12 @@ def _wait_for_template(
 
 
 def _wait_and_click(name: str, label: str, timeout: float) -> bool:
+    deadline = time.monotonic() + timeout
     _, rect, _ = _wait_for_template(name, label, timeout)
-    if rect is None:
+    remaining = deadline - time.monotonic()
+    if rect is None or remaining <= 0:
         return False
-    return _click_and_confirm(name, label, rect, timeout)
+    return _click_and_confirm(name, label, rect, remaining)
 
 
 def _ensure_store_menu_expanded() -> bool:
@@ -502,7 +504,9 @@ def _ensure_store_menu_expanded() -> bool:
             best_scroll = scroll_score
         if scroll_rect is not None:
             print(f"识别到右下角卷轴，匹配分数 {scroll_score:.3f}")
-            remaining = max(0.1, deadline - time.monotonic())
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
             if not _click_and_confirm(
                 "menu_scroll",
                 "展开功能栏卷轴",
@@ -587,6 +591,7 @@ def _wait_for_shop_landing() -> Tuple[str, Optional[Rect]]:
 
 
 def _open_merchant_page() -> MerchantResult:
+    entry_deadline = time.monotonic() + PAGE_WAIT_SECONDS
     landing, landing_rect = _wait_for_shop_landing()
     merchant_rect = landing_rect if landing == "merchant" else None
     if landing == "popular":
@@ -603,6 +608,7 @@ def _open_merchant_page() -> MerchantResult:
         # 不能等待该模板消失，否则会继续退回庭院。
         _click_rect(back_rect, "退出热门推荐")
         time.sleep(1.0)
+        entry_deadline = time.monotonic() + PAGE_WAIT_SECONDS
         _, merchant_rect, _ = _wait_for_template(
             "merchant_entry",
             "返回商店街后的神秘商店入口",
@@ -613,13 +619,14 @@ def _open_merchant_page() -> MerchantResult:
     elif landing == "error":
         return MerchantResult.ERROR
 
-    if merchant_rect is None:
+    remaining = entry_deadline - time.monotonic()
+    if merchant_rect is None or remaining <= 0:
         return MerchantResult.ERROR
     if not _click_and_confirm(
         "merchant_entry",
         "神秘商店入口",
         merchant_rect,
-        PAGE_WAIT_SECONDS,
+        remaining,
     ):
         return MerchantResult.ERROR
     refresh_state, _ = _wait_for_refresh_state(
@@ -688,17 +695,9 @@ def _refresh_merchant_shop() -> RefreshState:
 
     _click_rect(refresh_rect, "刷新神秘商店")
 
-    _, confirm_rect, _ = _wait_for_template(
+    if not _wait_and_click(
         "confirm",
         "刷新确认键",
-        CONFIRM_WAIT_SECONDS,
-    )
-    if confirm_rect is None:
-        return RefreshState.ERROR
-    if not _click_and_confirm(
-        "confirm",
-        "刷新确认键",
-        confirm_rect,
         CONFIRM_WAIT_SECONDS,
     ):
         return RefreshState.ERROR
@@ -731,6 +730,7 @@ def _return_to_courtyard() -> bool:
 
 def check_merchant() -> MerchantResult:
     """进入神秘商店 → 检测蓝票价格 → 无蓝票时尝试刷新 → 退出并返回结果。"""
+    LOGGER.set_stage("进入神秘商店")
     utils.connect_to_mumu()
     print("开始奸商检测")
 
@@ -745,18 +745,22 @@ def check_merchant() -> MerchantResult:
         return page_result
 
     # 2. 先检测现有商品；有蓝票但价格不明时保留商店并继续任务。
+    LOGGER.set_stage("检测蓝票价格")
     saw_blue_ticket, blue_ticket_price = _detect_blue_ticket_price()
     unknown_price = saw_blue_ticket and blue_ticket_price is None
     # 3. 仅没有蓝票时尝试刷新；真正刷新成功后才重新识别。
     if not saw_blue_ticket:
+        LOGGER.set_stage("刷新神秘商店")
         refresh_state = _refresh_merchant_shop()
         if refresh_state is RefreshState.ERROR:
             return MerchantResult.ERROR
         if refresh_state is RefreshState.REFRESHED:
+            LOGGER.set_stage("复核刷新后商品")
             saw_blue_ticket, blue_ticket_price = _detect_blue_ticket_price()
             unknown_price = saw_blue_ticket and blue_ticket_price is None
 
     # 4. 返回庭院后输出价格结果，避免页面残留影响下一任务。
+    LOGGER.set_stage("返回庭院")
     if not _return_to_courtyard():
         return MerchantResult.ERROR
     if unknown_price:
