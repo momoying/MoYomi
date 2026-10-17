@@ -1,8 +1,10 @@
 """日志精简回归：验证正常输出和调试信息，不连接模拟器。"""
 
 import io
+import tempfile
 import unittest
 from contextlib import redirect_stdout
+from pathlib import Path
 from unittest.mock import patch
 
 from module import automation
@@ -11,6 +13,28 @@ from module.task_execution import run_task_call
 
 
 class TaskLoggingTests(unittest.TestCase):
+    def test_unreadable_template_reports_file_instead_of_match_timeout(self):
+        for content in (None, b"", b"not an image"):
+            with self.subTest(content=content), tempfile.TemporaryDirectory() as temporary:
+                path = Path(temporary) / "store_entry.png"
+                if content is not None:
+                    path.write_bytes(content)
+                _, report = run_task_call(lambda: automation._load_template(str(path)))
+                self.assertIsInstance(report.exception, RuntimeError)
+                self.assertIn(str(path), report.reason)
+                self.assertIn("完整更新包", report.reason)
+
+    def test_template_load_supports_unicode_paths_and_cache(self):
+        source = Path(__file__).resolve().parents[1] / "module/res/common_ui/store_entry.png"
+        with tempfile.TemporaryDirectory() as temporary, patch.dict(automation._template_cache, clear=True):
+            path = Path(temporary) / "中文目录" / "商店.png"
+            path.parent.mkdir()
+            path.write_bytes(source.read_bytes())
+            template = automation._load_template(str(path))
+            self.assertGreater(template.size, 0)
+            path.unlink()
+            self.assertIs(automation._load_template(str(path)), template)
+
     def logger(self):
         logger = TaskLogger("协战奖励")
         logger.debug_enabled = False

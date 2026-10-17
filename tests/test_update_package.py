@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import subprocess
 import sys
 import tempfile
@@ -29,12 +30,18 @@ class UpdatePackageTests(unittest.TestCase):
             (repo / "ui.py").write_text("old ui\n", encoding="utf-8")
             (repo / "requirements.txt").write_text("flet\n", encoding="utf-8")
             (repo / "module" / "updater.py").write_text("old updater\n", encoding="utf-8")
+            old_template = "tasks/示例/res/商店.png"
+            new_template = "module/res/common_ui/商店.png"
+            (repo / old_template).parent.mkdir(parents=True)
+            (repo / old_template).write_bytes(b"unchanged template")
             git("add", ".")
             git("commit", "-m", "base release")
             git("tag", "v1.6.3")
 
             (repo / "ui.py").write_text("new ui\n", encoding="utf-8")
-            git("add", "ui.py")
+            (repo / new_template).parent.mkdir(parents=True)
+            (repo / old_template).rename(repo / new_template)
+            git("add", "-A")
             git("commit", "-m", "next release")
             git("tag", "v1.6.4")
 
@@ -53,6 +60,9 @@ class UpdatePackageTests(unittest.TestCase):
                     if name.endswith("/.moyomi-version.json")
                 )
                 full_version = json.loads(archive.read(version_path))
+                wrapper = version_path.rsplit("/", 1)[0]
+                self.assertEqual(archive.read(f"{wrapper}/{new_template}"), b"unchanged template")
+                self.assertNotIn(f"{wrapper}/{old_template}", archive.namelist())
             self.assertEqual(full_version, {"version": "1.6.4", "tag": "v1.6.4"})
 
             with zipfile.ZipFile(output / "MoYomi-OTA-v1.6.3_v1.6.4.zip") as archive:
@@ -66,8 +76,18 @@ class UpdatePackageTests(unittest.TestCase):
                 )
                 manifest = json.loads(archive.read(manifest_path))
                 ota_version = json.loads(archive.read(version_path))
+                wrapper = version_path.rsplit("/", 1)[0]
+                self.assertEqual(archive.read(f"{wrapper}/{new_template}"), b"unchanged template")
             self.assertEqual(manifest["from_version"], "1.6.3")
             self.assertEqual(manifest["to_version"], "1.6.4")
+            self.assertEqual(manifest["kind"], "incremental-v2")
+            self.assertEqual(manifest["deleted"], [old_template])
+            self.assertEqual(manifest["base_files"], {
+                "ui.py": hashlib.sha256(b"old ui\n").hexdigest(),
+                "requirements.txt": hashlib.sha256(b"flet\n").hexdigest(),
+                "module/updater.py": hashlib.sha256(b"old updater\n").hexdigest(),
+                old_template: hashlib.sha256(b"unchanged template").hexdigest(),
+            })
             self.assertEqual(ota_version, full_version)
 
 

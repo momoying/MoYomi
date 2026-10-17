@@ -78,10 +78,7 @@ class AssistantDashboard(
             font_family="Microsoft YaHei UI",
             color_scheme_seed=COLORS["active"],
         )
-        self.page.window.width = 1350
-        self.page.window.height = 860
-        self.page.window.min_width = 1350
-        self.page.window.min_height = 860
+        self._configure_window()
 
         self.summary_text = ft.Text(size=12, color=COLORS["muted"])
         self.running_badge_text = ft.Text(

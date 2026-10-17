@@ -56,6 +56,7 @@ def _write_ota_zip(
     deleted: tuple[str, ...] = (),
     from_version: str = "1.6.3",
     to_version: str = "1.6.4",
+    base_files: dict[str, bytes] | None = None,
 ) -> None:
     wrapper = "momoying-MoYomi-v1.6.4"
     all_files = dict(files)
@@ -64,9 +65,13 @@ def _write_ota_zip(
     ).encode("utf-8")
     all_files[".moyomi-version.json"] = version_file
     metadata = {
-        "kind": "incremental",
+        "kind": "incremental-v2",
         "from_version": from_version,
         "to_version": to_version,
+        "base_files": {
+            name: hashlib.sha256(data).hexdigest()
+            for name, data in (base_files or {"requirements.txt": b"same requirements"}).items()
+        },
         "deleted": list(deleted),
         "files": {name: hashlib.sha256(data).hexdigest() for name, data in all_files.items()},
     }
@@ -187,17 +192,20 @@ class ArchiveTests(unittest.TestCase):
             full_url="https://github.com/momoying/MoYomi/releases/download/v1.6.4/full.zip",
         )
         with tempfile.TemporaryDirectory() as temporary:
-            ota_path = Path(temporary) / "ota.zip"
+            root = Path(temporary)
+            (root / "requirements.txt").write_bytes(b"same requirements")
+            updater._save_state(root / ".moyomi-version.json", {"version": "1.6.3"})
+            ota_path = root / "ota.zip"
             _write_ota_zip(ota_path, {"changed.py": b"new"}, to_version="1.6.4")
             ota_bytes = ota_path.read_bytes()
-        attempted = []
+            attempted = []
 
-        def opener(request, **_kwargs):
-            attempted.append(request.full_url)
-            return _Response(ota_bytes, request.full_url)
+            def opener(request, **_kwargs):
+                attempted.append(request.full_url)
+                return _Response(ota_bytes, request.full_url)
 
-        with mock.patch.object(updater, "APP_VERSION", "1.6.3"):
-            prepared = updater.download_release(release, opener=opener)
+            with mock.patch.object(updater, "APP_VERSION", "1.6.3"):
+                prepared = updater.download_release(release, opener=opener, root=root)
         try:
             self.assertTrue(prepared.incremental)
             self.assertEqual(attempted, [release.ota_url])
@@ -357,6 +365,8 @@ class ArchiveTests(unittest.TestCase):
 
             self.assertTrue(success)
             self.assertEqual((root / "ui.py").read_bytes(), b"new ui")
+            with mock.patch.object(updater, "VERSION_METADATA_PATH", root / ".moyomi-version.json"):
+                self.assertEqual(updater._installed_version(), "1.6.2")
             self.assertFalse((root / "obsolete.py").exists())
             self.assertEqual((root / "friend-note.txt").read_bytes(), b"keep")
             self.assertEqual((root / "config" / "account.json").read_bytes(), b"keep config")
@@ -375,6 +385,10 @@ class ArchiveTests(unittest.TestCase):
             (root / "ui.py").write_bytes(b"old ui")
             (root / "requirements.txt").write_bytes(b"old requirements")
             (root / "module" / "updater.py").write_bytes(b"old updater")
+            version_path = root / ".moyomi-version.json"
+            version_path.write_text(
+                json.dumps({"version": "1.6.1", "tag": "v1.6.1"}), encoding="utf-8"
+            )
             archive_path = base / "release.zip"
             _write_release_zip(
                 archive_path,
@@ -395,6 +409,8 @@ class ArchiveTests(unittest.TestCase):
             )
 
             self.assertFalse(success)
+            with mock.patch.object(updater, "VERSION_METADATA_PATH", version_path):
+                self.assertEqual(updater._installed_version(), "1.6.1")
             self.assertEqual((root / "ui.py").read_bytes(), b"old ui")
             self.assertEqual(
                 (root / "requirements.txt").read_bytes(), b"old requirements"
@@ -412,6 +428,7 @@ class ArchiveTests(unittest.TestCase):
             (root / "untouched.py").write_bytes(b"keep")
             (root / "removed.py").write_bytes(b"remove")
             (root / "requirements.txt").write_bytes(b"same requirements")
+            updater._save_state(root / ".moyomi-version.json", {"version": "1.6.3"})
             updater._save_state(
                 root / "config" / "update_state.json",
                 {"managed_files": ["changed.py", "untouched.py", "removed.py", "requirements.txt"]},
@@ -433,10 +450,150 @@ class ArchiveTests(unittest.TestCase):
             )
 
             self.assertTrue(success)
+            with mock.patch.object(updater, "VERSION_METADATA_PATH", root / ".moyomi-version.json"):
+                self.assertEqual(updater._installed_version(), "1.6.4")
             self.assertEqual((root / "changed.py").read_bytes(), b"new")
             self.assertEqual((root / "untouched.py").read_bytes(), b"keep")
             self.assertFalse((root / "removed.py").exists())
             self.assertFalse(installed)
+
+    def test_state_save_failure_rolls_back_files_version_and_managed_list(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            base = Path(temporary)
+            root = base / "app"
+            root.mkdir()
+            original_files = {
+                "ui.py": b"old ui",
+                "requirements.txt": b"same requirements",
+                "obsolete.py": b"old file",
+                ".moyomi-version.json": b'{"version":"1.6.3"}',
+            }
+            for name, data in original_files.items():
+                (root / name).write_bytes(data)
+            state_path = root / "config/update_state.json"
+            updater._save_state(state_path, {"managed_files": sorted(original_files)})
+            archive_path = base / "release.zip"
+            _write_release_zip(archive_path, {"new.py": b"new"})
+            save_state = updater._save_state
+            save_calls = []
+
+            def fail_once(path, state):
+                save_calls.append(True)
+                if len(save_calls) == 1:
+                    raise OSError("state save failed")
+                save_state(path, state)
+
+            with mock.patch.object(updater, "_save_state", side_effect=fail_once):
+                success = updater.apply_update(
+                    archive_path, root, "python", "1.6.4", restart=False,
+                    requirements_installer=lambda *_args: None,
+                )
+
+            self.assertFalse(success)
+            for name, data in original_files.items():
+                self.assertEqual((root / name).read_bytes(), data, name)
+            self.assertFalse((root / "new.py").exists())
+            self.assertFalse((root / "module/updater.py").exists())
+            state = updater._load_state(state_path)
+            self.assertEqual(state["managed_files"], sorted(original_files))
+            self.assertEqual(state["last_result"]["status"], "error")
+
+    def test_missing_or_changed_base_files_fall_back_to_full_package(self):
+        release = updater.ReleaseInfo(
+            version="1.6.4", tag_name="v1.6.4", name="v1.6.4", notes="",
+            page_url="https://github.com/momoying/MoYomi/releases/tag/v1.6.4",
+            ota_url="https://github.com/momoying/MoYomi/releases/download/v1.6.4/ota.zip",
+            full_url="https://github.com/momoying/MoYomi/releases/download/v1.6.4/full.zip",
+        )
+        for local_content in (None, b"outdated controller"):
+            with self.subTest(local_content=local_content), tempfile.TemporaryDirectory() as temporary:
+                base = Path(temporary)
+                root = base / "app"
+                root.mkdir()
+                updater._save_state(root / ".moyomi-version.json", {"version": "1.6.3"})
+                relative = "controller/__init__.py"
+                if local_content is not None:
+                    (root / "controller").mkdir()
+                    (root / relative).write_bytes(local_content)
+                ota_path, full_path = base / "ota.zip", base / "full.zip"
+                _write_ota_zip(
+                    ota_path, {"changed.py": b"new"},
+                    base_files={relative: b"expected controller"},
+                )
+                _write_release_zip(full_path, {relative: b"expected controller"})
+                attempted = []
+
+                def opener(request, **_kwargs):
+                    attempted.append(request.full_url)
+                    path = ota_path if request.full_url == release.ota_url else full_path
+                    return _Response(path.read_bytes(), request.full_url)
+
+                with mock.patch.object(updater, "APP_VERSION", "1.6.3"):
+                    prepared = updater.download_release(release, opener=opener, root=root)
+                try:
+                    self.assertFalse(prepared.incremental)
+                    self.assertEqual(attempted, [release.ota_url, release.full_url])
+                    self.assertTrue(updater.apply_update(
+                        prepared.archive_path, root, "python", "1.6.4", restart=False,
+                        requirements_installer=lambda *_args: None,
+                    ))
+                    self.assertEqual((root / relative).read_bytes(), b"expected controller")
+                finally:
+                    import shutil
+
+                    shutil.rmtree(prepared.temporary_dir, ignore_errors=True)
+
+    def test_ota_rechecks_base_before_changing_program_files(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            base = Path(temporary)
+            root = base / "app"
+            root.mkdir()
+            (root / "changed.py").write_bytes(b"old")
+            updater._save_state(root / ".moyomi-version.json", {"version": "1.6.3"})
+            archive_path = base / "ota.zip"
+            _write_ota_zip(
+                archive_path, {"changed.py": b"new"},
+                base_files={"controller/__init__.py": b"missing controller"},
+            )
+            self.assertFalse(updater.apply_update(
+                archive_path, root, "python", "1.6.4", restart=False,
+                requirements_installer=lambda *_args: None,
+            ))
+            self.assertEqual((root / "changed.py").read_bytes(), b"old")
+            with mock.patch.object(updater, "VERSION_METADATA_PATH", root / ".moyomi-version.json"):
+                self.assertEqual(updater._installed_version(), "1.6.3")
+
+    def test_ota_rejects_version_file_that_disagrees_with_target(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            base = Path(temporary)
+            root = base / "app"
+            root.mkdir()
+            (root / "changed.py").write_bytes(b"old")
+            archive_path = base / "ota.zip"
+            _write_ota_zip(archive_path, {"changed.py": b"new"})
+            with zipfile.ZipFile(archive_path) as archive:
+                contents = {name: archive.read(name) for name in archive.namelist()}
+            wrapper = "momoying-MoYomi-v1.6.4"
+            version_name = f"{wrapper}/.moyomi-version.json"
+            contents[version_name] = json.dumps({"version": "1.6.3"}).encode("utf-8")
+            manifest_name = f"{wrapper}/.moyomi-update.json"
+            manifest = json.loads(contents[manifest_name])
+            manifest["files"][".moyomi-version.json"] = hashlib.sha256(
+                contents[version_name]
+            ).hexdigest()
+            contents[manifest_name] = json.dumps(manifest).encode("utf-8")
+            with zipfile.ZipFile(archive_path, "w") as archive:
+                for name, data in contents.items():
+                    archive.writestr(name, data)
+
+            success = updater.apply_update(
+                archive_path, root, "python", "1.6.4", restart=False,
+                requirements_installer=lambda *_args: None,
+            )
+
+            self.assertFalse(success)
+            self.assertEqual((root / "changed.py").read_bytes(), b"old")
+            self.assertFalse((root / ".moyomi-version.json").exists())
 
 
 if __name__ == "__main__":

@@ -395,7 +395,6 @@ _mumu_capture_error = None
 _last_screenshot_time = 0.0
 _latest_screenshot_frame = None
 _template_cache = {}
-_missing_template_warned = set()
 
 
 def reset_screenshot_backend():
@@ -639,7 +638,7 @@ def save_screenshot(output_path: str = "screenshot.png", frame: np.ndarray | Non
     return output_path
 
 
-def _load_template(template_path: str) -> np.ndarray | None:
+def _load_template(template_path: str) -> np.ndarray:
     """
     缓存模板图，避免每次匹配都反复 imread。
     """
@@ -647,12 +646,17 @@ def _load_template(template_path: str) -> np.ndarray | None:
     if template is not None:
         return template
 
-    template = cv2.imread(template_path)
-    if template is None:
-        if template_path not in _missing_template_warned:
-            print(f"[WARN] 模板图片读取失败：{template_path}")
-            _missing_template_warned.add(template_path)
-        return None
+    try:
+        template = cv2.imdecode(
+            np.frombuffer(Path(template_path).read_bytes(), dtype=np.uint8),
+            cv2.IMREAD_COLOR,
+        )
+        if template is None:
+            raise ValueError("无效的图片数据")
+    except (OSError, ValueError, cv2.error) as exc:
+        raise RuntimeError(
+            f"模板图片缺失或无法读取：{template_path}；请用完整更新包修复程序"
+        ) from exc
 
     _template_cache[template_path] = template
     return template
@@ -689,8 +693,6 @@ def crop_and_match(top_left, bottom_right, template_path, screenshot_path=None, 
     crop = screenshot[y1:y2, x1:x2]
 
     template = _load_template(template_path)
-    if template is None:
-        return None, None
 
     if crop.size == 0:
         return None, None

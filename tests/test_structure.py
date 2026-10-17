@@ -8,6 +8,7 @@ import re
 from pathlib import Path
 
 import main
+from module import automation
 from module.base.assets import ClickAsset, ImageAsset
 from module.base.device import TaskDevice
 
@@ -102,6 +103,7 @@ class ProjectStructureTests(unittest.TestCase):
                 for attr_name, asset in vars(cls).items():
                     if attr_name.startswith("I_") and isinstance(asset, ImageAsset):
                         self.assertTrue(asset.file.is_file(), asset.file)
+                        self.assertIsNotNone(automation._load_template(asset.path), asset.file)
                         self.assertRegex(asset.name, r"^[a-z0-9_]+$")
                     if attr_name.startswith("C_") and isinstance(asset, ClickAsset):
                         self.assertRegex(asset.name, r"^[a-z0-9_]+$")

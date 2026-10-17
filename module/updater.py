@@ -196,7 +196,7 @@ def _read_patch_metadata(archive: zipfile.ZipFile) -> Optional[dict[str, Any]]:
         metadata = json.loads(archive.read(metadata_name).decode("utf-8"))
     except (KeyError, UnicodeDecodeError, ValueError) as exc:
         raise UpdateError("增量更新清单无效") from exc
-    if not isinstance(metadata, dict) or metadata.get("kind") != "incremental":
+    if not isinstance(metadata, dict) or metadata.get("kind") not in {"incremental", "incremental-v2"}:
         raise UpdateError("增量更新清单格式无效")
     deleted = metadata.get("deleted")
     files = metadata.get("files")
@@ -310,6 +310,7 @@ def download_release(
     release: ReleaseInfo,
     *,
     opener: Callable[..., Any] = urllib.request.urlopen,
+    root: Path = PROJECT_ROOT,
 ) -> PreparedUpdate:
     temporary_dir = Path(tempfile.mkdtemp(prefix="moyomi-update-"))
     archive_path = temporary_dir / f"MoYomi-{release.version}.zip"
@@ -333,6 +334,7 @@ def download_release(
                     or _read_archive_version(archive_path) != release.version
                 ):
                     raise UpdateError("增量更新包版本不匹配")
+                _validate_incremental_base(metadata, root)
                 return PreparedUpdate(
                     archive_path=archive_path,
                     temporary_dir=temporary_dir,
@@ -401,6 +403,26 @@ def _safe_destination(root: Path, relative: str) -> Path:
     return destination
 
 
+def _validate_incremental_base(metadata: dict[str, Any], root: Path) -> None:
+    """Only patch an intact installation of the expected base release."""
+    files = metadata.get("base_files")
+    if not isinstance(files, dict) or not files:
+        raise UpdateError("增量更新包缺少原版本完整性清单，请使用完整更新包")
+    if _load_state(root / ".moyomi-version.json").get("version") != metadata["from_version"]:
+        raise UpdateError("本地版本与增量更新包不匹配，请使用完整更新包")
+    for relative, digest in files.items():
+        if not isinstance(relative, str) or not isinstance(digest, str) or not re.fullmatch(r"[0-9a-f]{64}", digest):
+            raise UpdateError("增量更新原版本完整性清单无效")
+        _validate_update_path(relative)
+        path = _safe_destination(root, relative)
+        try:
+            matches = hashlib.sha256(path.read_bytes()).hexdigest() == digest
+        except OSError:
+            matches = False
+        if not matches:
+            raise UpdateError(f"本地程序文件缺失或已变更：{relative}，请使用完整更新包")
+
+
 def _restore_files(root: Path, backup: Path, touched: set[str], existed: set[str]) -> None:
     for relative in touched:
         destination = _safe_destination(root, relative)
@@ -444,6 +466,7 @@ def apply_update(
     state_path = root / "config" / "update_state.json"
     state = _load_state(state_path)
     state.pop("installed_version", None)
+    original_state = state.copy()
     old_managed = {
         str(item)
         for item in state.get("managed_files", [])
@@ -460,11 +483,12 @@ def apply_update(
         with zipfile.ZipFile(archive_path) as archive:
             metadata = _read_patch_metadata(archive)
             members = _archive_members(archive)
-            if metadata is None:
-                if _read_archive_version(archive_path) != target_version:
-                    raise UpdateError("完整更新包版本与目标版本不匹配")
-            elif metadata["to_version"] != target_version:
+            if _read_archive_version(archive_path) != target_version:
+                raise UpdateError("更新包版本与目标版本不匹配")
+            if metadata is not None and metadata["to_version"] != target_version:
                 raise UpdateError("增量更新包版本与目标版本不匹配")
+            if metadata is not None:
+                _validate_incremental_base(metadata, root)
             deleted_files = set(metadata["deleted"]) if metadata is not None else set()
             if metadata is None:
                 new_managed = set(members)
@@ -512,17 +536,18 @@ def apply_update(
                 shutil.copy2(source, destination)
             if old_requirements != new_requirements:
                 requirements_installer(python_executable, root / "requirements.txt")
+            state["managed_files"] = sorted(new_managed)
+            state["last_result"] = {
+                "status": "success",
+                "version": target_version,
+                "message": f"已成功更新到 {target_version}",
+            }
+            _save_state(state_path, state)
         except Exception:
             _restore_files(root, backup, touched, existed)
+            state = original_state
             raise
 
-        state["managed_files"] = sorted(new_managed)
-        state["last_result"] = {
-            "status": "success",
-            "version": target_version,
-            "message": f"已成功更新到 {target_version}",
-        }
-        _save_state(state_path, state)
         success = True
     except Exception as exc:
         state["last_result"] = {

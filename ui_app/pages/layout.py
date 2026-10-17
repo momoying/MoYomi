@@ -9,9 +9,55 @@ import flet as ft
 
 from ui_app.components import *
 from ui_app.constants import *
+from ui_app.window_layout import (
+    CANVAS_HEIGHT, CANVAS_WIDTH, WINDOW_HEIGHT, WINDOW_WIDTH,
+    fit_canvas, fit_window, windows_work_area,
+)
 
 
 class LayoutMixin:
+    def _configure_window(self) -> None:
+        self._window_work_area = None
+        self.page.window.aspect_ratio = WINDOW_WIDTH / WINDOW_HEIGHT
+        self.page.window.alignment = ft.Alignment.CENTER
+        self.page.window.on_event = self._on_window_event
+        self.page.on_media_change = self._on_display_metrics_change
+        self._fit_window_to_screen(initial=True)
+
+    def _fit_window_to_screen(self, *, initial: bool = False) -> None:
+        work_area = windows_work_area(self.page.title)
+        if not initial and work_area == self._window_work_area:
+            return
+        self._window_work_area = work_area
+        width, height = fit_window(work_area)
+        window = self.page.window
+        window.min_width, window.min_height = min(800, width), min(520, height)
+        if initial:
+            window.width, window.height = width, height
+        elif not window.maximized and not window.full_screen and not window.minimized:
+            scale = min(1.0, width / window.width, height / window.height)
+            window.width, window.height = window.width * scale, window.height * scale
+        if not initial:
+            self._safe_update()
+
+    def _on_window_event(self, event: ft.WindowEvent) -> None:
+        if event.type in {ft.WindowEventType.MOVED, ft.WindowEventType.FOCUS, ft.WindowEventType.RESTORE}:
+            self._fit_window_to_screen()
+
+    def _on_display_metrics_change(self, _event: Any) -> None:
+        self._fit_window_to_screen()
+
+    def _on_viewport_size_change(self, event: ft.LayoutSizeChangeEvent) -> None:
+        fitted = fit_canvas(event.width, event.height)
+        if fitted is None:
+            return
+        scale, left, top = fitted
+        surface = self._layout_surface
+        surface.scale = ft.Scale(scale=scale, alignment=ft.Alignment.TOP_LEFT, transform_hit_tests=True)
+        surface.left, surface.top = left, top
+        self._fit_window_to_screen()
+        self._safe_update()
+
     def _panel(
         self,
         title: str,
@@ -153,10 +199,25 @@ class LayoutMixin:
             spacing=0,
             expand=True,
         )
-        return ft.Stack(
+        content = ft.Stack(
             [self.wallpaper_image, self.wallpaper_blur_layer, foreground],
             fit=ft.StackFit.EXPAND,
             expand=True,
+        )
+        self._layout_surface = ft.Container(
+            content=content,
+            width=CANVAS_WIDTH,
+            height=CANVAS_HEIGHT,
+            left=0,
+            top=0,
+            scale=ft.Scale(scale=1, alignment=ft.Alignment.TOP_LEFT, transform_hit_tests=True),
+        )
+        return ft.Stack(
+            [self._layout_surface],
+            expand=True,
+            clip_behavior=ft.ClipBehavior.HARD_EDGE,
+            on_size_change=self._on_viewport_size_change,
+            size_change_interval=50,
         )
 
 

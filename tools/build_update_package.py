@@ -98,6 +98,11 @@ def build(base_tag: str, target_tag: str, output: Path) -> int:
         and safe_path(fields[index + 1].decode("utf-8"))
     ]
     wrapper = f"momoying-MoYomi-{target_tag}"
+    base_files = {
+        path: hashlib.sha256(git("show", f"{base_tag}:{path}", text=False)).hexdigest()
+        for path in str(git("ls-tree", "-r", "-z", "--name-only", base_tag)).split("\0")
+        if safe_path(path)
+    }
     files: dict[str, str] = {}
     output.parent.mkdir(parents=True, exist_ok=True)
     with zipfile.ZipFile(output, "w", compression=zipfile.ZIP_DEFLATED) as archive:
@@ -110,9 +115,11 @@ def build(base_tag: str, target_tag: str, output: Path) -> int:
         archive.writestr(f"{wrapper}/.moyomi-version.json", version_file)
         files[".moyomi-version.json"] = hashlib.sha256(version_file).hexdigest()
         manifest = {
-            "kind": "incremental",
+            # Legacy updaters reject v2 and fall back to the full package.
+            "kind": "incremental-v2",
             "from_version": ".".join(map(str, base_version)),
             "to_version": ".".join(map(str, target_version)),
+            "base_files": base_files,
             "deleted": sorted(deleted),
             "files": files,
         }
@@ -128,7 +135,7 @@ def build_full(target_tag: str, output: Path) -> int:
     target_version = version(target_tag)
     if target_version is None:
         raise ValueError(f"Invalid release tag: {target_tag}")
-    paths = str(git("ls-tree", "-r", "--name-only", target_tag)).splitlines()
+    paths = str(git("ls-tree", "-r", "-z", "--name-only", target_tag)).split("\0")
     wrapper = f"momoying-MoYomi-{target_tag}"
     output.parent.mkdir(parents=True, exist_ok=True)
     with zipfile.ZipFile(output, "w", compression=zipfile.ZIP_DEFLATED) as archive:
