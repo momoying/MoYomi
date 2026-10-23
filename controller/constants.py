@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from module.region_settings import load_region_names
 
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
@@ -108,8 +109,8 @@ CROSS_REGION = "cross"
 VALID_REGIONS = (SAME_REGION, CROSS_REGION)
 
 REGION_LABELS = {
-    SAME_REGION: "狐之宴",
-    CROSS_REGION: "砂狐乐园",
+    region: name or ("同区" if region == SAME_REGION else "跨区")
+    for region, name in load_region_names().items()
 }
 
 REGION_STATE_KEYS = {

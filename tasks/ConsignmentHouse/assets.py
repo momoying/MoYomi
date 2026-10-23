@@ -96,9 +96,9 @@ class ConsignmentHouseAssets(TaskAssets):
         name='purchase',
     )
 
-    # 奖励结算界面
+    # 获得奖励弹窗，与邮件领取共用同一标题模板
     I_REWARD = ImageAsset(
-        file=RES_DIR / "reward.png",
+        file=TASKS_DIR / "Mail" / "res" / "reward.png",
         region=((350, 130), (900, 330)),
         threshold=0.92,
         name='reward',

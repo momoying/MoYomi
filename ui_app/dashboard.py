@@ -303,6 +303,20 @@ class AssistantDashboard(
         )
         self.mumu_status = ft.Text(size=10, color=COLORS["muted"])
         self._update_mumu_status()
+        self.same_region_name = ft.TextField(
+            label="同区区名",
+            value=str(self.settings["same_region_name"]),
+            border_radius=10,
+            dense=True,
+            expand=True,
+        )
+        self.cross_region_name = ft.TextField(
+            label="跨区区名",
+            value=str(self.settings["cross_region_name"]),
+            border_radius=10,
+            dense=True,
+            expand=True,
+        )
         self.screenshot_interval = ft.TextField(
             label="截图间隔（秒）",
             value=str(self.settings["screenshot_interval"]),
@@ -366,6 +380,8 @@ class AssistantDashboard(
             self.mumu_path_button,
             self.mumu_instance,
             self.mumu_refresh_button,
+            self.same_region_name,
+            self.cross_region_name,
             self.screenshot_interval,
             self.battle_detection_interval,
             self.recovery_retry_count,
@@ -551,7 +567,7 @@ class AssistantDashboard(
             for task_name in UI_TASK_ORDER
         }
         self.cross_region_enabled = ft.Switch(
-            label="启用跨区账号（砂狐乐园）",
+            label=f"启用跨区账号（{controller.REGION_LABELS[controller.CROSS_REGION]}）",
             value=False,
             active_color=COLORS["active"],
             on_change=self._on_cross_region_setting_changed,

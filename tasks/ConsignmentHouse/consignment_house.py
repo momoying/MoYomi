@@ -385,6 +385,8 @@ def _click_reward_blank() -> None:
 
 
 def _dismiss_reward() -> bool:
+    LOGGER.set_stage("领取寄售券奖励")
+    print("购买已确认，等待获得奖励界面")
     deadline = time.monotonic() + REWARD_WAIT_SECONDS
     _, reward_rect, _ = _wait_for_template(
         "reward", "获得奖励", REWARD_WAIT_SECONDS

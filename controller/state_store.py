@@ -267,7 +267,7 @@ def heart_team_battle_target(now: datetime) -> int:
 
 
 def cross_region_is_enabled(system_state: dict[str, Any]) -> bool:
-    """返回当前大账号/系统是否启用砂狐乐园角色。"""
+    """返回当前大账号/系统是否启用跨区角色。"""
     return system_state.get("cross_region_enabled") is True
 
 

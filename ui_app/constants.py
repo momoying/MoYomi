@@ -48,6 +48,8 @@ DEFAULT_MUMU_PATH = r"D:\Program Files\Netease\MuMu"
 MUMU_MANAGER_PATH = Path(DEFAULT_MUMU_PATH) / "nx_main" / "MuMuManager.exe"
 
 DEFAULT_SETTINGS = {
+    "same_region_name": "",
+    "cross_region_name": "",
     "screenshot_interval": 0.5,
     "battle_detection_interval": 2.0,
     "log_max_lines": 300,

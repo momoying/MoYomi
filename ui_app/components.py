@@ -207,18 +207,6 @@ class AccountCardView:
                 [
                     ft.Row(
                         [
-                            ft.Container(
-                                width=38,
-                                height=38,
-                                border_radius=12,
-                                bgcolor="#24324A",
-                                alignment=ft.Alignment.CENTER,
-                                content=ft.Icon(
-                                    ft.Icons.PERSON_ROUNDED,
-                                    color="#B7C8E2",
-                                    size=22,
-                                ),
-                            ),
                             ft.Column(
                                 [
                                     ft.Text(

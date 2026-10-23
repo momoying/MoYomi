@@ -132,6 +132,17 @@ class SettingsPageMixin:
                 ),
                 self.mumu_status,
                 ft.Divider(height=10, color=COLORS["border"]),
+                ft.Text("区服设置", size=12, weight=ft.FontWeight.BOLD),
+                ft.Row(
+                    [self.same_region_name, self.cross_region_name],
+                    spacing=8,
+                ),
+                ft.Text(
+                    "填写游戏中显示的完整区名，用于登录识别；保存后重启程序生效。",
+                    size=12,
+                    color=COLORS["muted"],
+                ),
+                ft.Divider(height=10, color=COLORS["border"]),
                 ft.Text("检测参数", size=12, weight=ft.FontWeight.BOLD),
                 ft.Row(
                     [
@@ -367,7 +378,7 @@ class SettingsPageMixin:
                 ),
                 self.cross_region_enabled,
                 ft.Text(
-                    "每个账号及系统均可独立启用；砂狐乐园固定执行悬赏检测和两位跨区好友点赞。",
+                    f"每个账号及系统均可独立启用；{controller.REGION_LABELS[controller.CROSS_REGION]}固定执行悬赏检测和两位跨区好友点赞。",
                     size=11,
                     color=COLORS["muted"],
                 ),
@@ -805,6 +816,17 @@ class SettingsPageMixin:
 
 
     def _read_settings_from_fields(self) -> Optional[dict[str, Any]]:
+        same_region_name = str(self.same_region_name.value or "").strip()
+        cross_region_name = str(self.cross_region_name.value or "").strip()
+        self.same_region_name.error_text = None if same_region_name else "请输入同区区名"
+        self.cross_region_name.error_text = None if cross_region_name else "请输入跨区区名"
+        if same_region_name and same_region_name == cross_region_name:
+            self.cross_region_name.error_text = "跨区区名不能与同区相同"
+        if self.same_region_name.error_text or self.cross_region_name.error_text:
+            self.settings_message.value = "请检查区服设置"
+            self.settings_message.color = COLORS["error"]
+            self._safe_update()
+            return None
         adb_path = Path(str(self.adb_path_field.value or "").strip()).expanduser()
         mumu_path = Path(
             str(self.mumu_path_field.value or "").strip()
@@ -908,6 +930,8 @@ class SettingsPageMixin:
             self._safe_update()
             return None
         return {
+            "same_region_name": same_region_name,
+            "cross_region_name": cross_region_name,
             "screenshot_interval": interval,
             "battle_detection_interval": battle_interval,
             "log_max_lines": max_lines,

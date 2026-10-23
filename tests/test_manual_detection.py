@@ -141,7 +141,7 @@ class ManualDetectionTests(unittest.TestCase):
                 self.assertEqual(len(panels), 2)
                 self.assertEqual(
                     [panel.content.controls[0].value for panel in panels],
-                    ["狐之宴", "砂狐乐园"],
+                    [controller.REGION_LABELS[region] for region in controller.VALID_REGIONS],
                 )
                 self.assertEqual(len(panels[0].content.controls), 5)
                 panels[0].content.controls[2].on_click(None)  # 同区现世勾协

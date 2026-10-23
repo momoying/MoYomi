@@ -166,7 +166,7 @@ def run_weekly(
             if login_outcome.failure_kind == "cancelled":
                 _emit_event(event_callback, "controller_stopped")
                 return False
-            message = f"{account_name} / {system} / 狐之宴 登录失败；{login_outcome.stage or '登录'}：{login_outcome.reason or '执行失败'}"
+            message = f"{account_name} / {system} / {REGION_LABELS[SAME_REGION]} 登录失败；{login_outcome.stage or '登录'}：{login_outcome.reason or '执行失败'}"
             if not (stop_event is not None and stop_event.is_set()):
                 capture_error_screenshot("account_sign", login_outcome.stage or "login_failed",
                                          **({"frame": login_outcome.frame} if login_outcome.frame is not None else {}))

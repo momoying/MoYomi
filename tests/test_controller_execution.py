@@ -591,7 +591,7 @@ class ControllerExecutionTests(unittest.TestCase):
 
         self.services.sign_in = sign.run
         self.services.task_runners[MAIL_TASK] = Mock(return_value=True)
-        with patch.object(sign.utils, "connect_to_mumu"), patch.object(
+        with patch.dict(sign.REGION_NAMES, {"same": "测试同区"}), patch.object(sign.utils, "connect_to_mumu"), patch.object(
             sign, "_wait_and_select_system", side_effect=select_system,
         ), patch("builtins.print"):
             self.assertFalse(self.run_daily([TaskWork(MAIL_TASK, 1)]))

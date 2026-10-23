@@ -29,6 +29,7 @@ from module.base.device import TaskDevice
 from module.task_execution import report_failure
 from module.logging import TaskLogger
 from module.model_paths import OCR_MODEL_DIR
+from module.region_settings import load_region_names
 
 
 from tasks.Account.assets import SignAssets
@@ -64,14 +65,13 @@ LOGIN_ACTION_DELAY_SECONDS = 1.0
 ENTER_GAME_RETRY_SECONDS = 3.0
 ENTER_GAME_DISAPPEAR_CONFIRM_FRAMES = 2
 VALID_SYSTEMS = ("IOS", "Android")
-REGION_NAMES = {
-    "same": "狐之宴",
-    "cross": "砂狐乐园",
-}
+REGION_NAMES = load_region_names()
 REGION_OCR_ALIASES = {
-    "same": ("狐之宴",),
+    "same": (REGION_NAMES["same"],) if REGION_NAMES["same"] else (),
     # 兼容用户旧配置或 OCR 偶发把“砂”识别成“沙”。
-    "cross": ("砂狐乐园", "沙狐乐园"),
+    "cross": tuple(dict.fromkeys(name for name in (
+        REGION_NAMES["cross"], REGION_NAMES["cross"].replace("砂", "沙"),
+    ) if name)),
 }
 
 Rect = Tuple[int, int, int, int]
@@ -96,12 +96,14 @@ def normalize_region(region: str) -> Optional[str]:
         "home": "same",
         "normal": "same",
         "同区": "same",
-        "狐之宴": "same",
         "cross": "cross",
         "跨区": "cross",
-        "砂狐乐园": "cross",
-        "沙狐乐园": "cross",
     }
+    aliases.update(
+        (name.lower(), key)
+        for key, names in REGION_OCR_ALIASES.items()
+        for name in names
+    )
     return aliases.get(str(region).strip().lower())
 
 
@@ -590,6 +592,12 @@ def run(system: str = "IOS", region: str = "same") -> bool:
     normalized_region = normalize_region(region)
     if normalized_region is None:
         print(f"[ERROR] 不支持的区服 {region!r}，仅支持 {VALID_REGIONS}")
+        return False
+    if not REGION_NAMES[normalized_region]:
+        label = "同区" if normalized_region == "same" else "跨区"
+        reason = f"请先在全局设置中填写{label}区名，保存后重启程序"
+        print(f"[ERROR] {reason}")
+        report_failure(reason)
         return False
 
     utils.connect_to_mumu()

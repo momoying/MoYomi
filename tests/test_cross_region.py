@@ -306,6 +306,16 @@ class BountySummaryTests(unittest.TestCase):
 
 
 class RegionLoginTests(unittest.TestCase):
+    def setUp(self):
+        names = patch.dict(Sign.REGION_NAMES, {"same": "狐之宴", "cross": "砂狐乐园"})
+        aliases = patch.dict(Sign.REGION_OCR_ALIASES, {
+            "same": ("狐之宴",), "cross": ("砂狐乐园", "沙狐乐园"),
+        })
+        names.start()
+        aliases.start()
+        self.addCleanup(names.stop)
+        self.addCleanup(aliases.stop)
+
     def test_region_card_ocr_uses_name_only_crops(self) -> None:
         seen_regions = []
 

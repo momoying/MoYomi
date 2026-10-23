@@ -185,7 +185,7 @@ def combined_task_runs_due(
     system_state: dict[str, Any],
     now: datetime,
 ) -> int:
-    """合并同一卡片下狐之宴与砂狐乐园的到期次数。"""
+    """合并同一卡片下同区与跨区的到期次数。"""
     runs = (
         task_runs_due(task_name, system_state, now)
         if task_is_enabled(system_state, task_name)
