@@ -263,7 +263,7 @@ class StartupAssets(TaskAssets):
     # 悬赏封印页面关闭按钮
     I_BOUNTY_CLOSE = ImageAsset(
         file=TASKS_DIR / "Bounty" / "res" / "back.png",
-        region=((1050, 60), (1250, 210)),
+        region=((1050, 60), (1280, 210)),
         name="bounty_close",
     )
 

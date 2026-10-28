@@ -26,7 +26,7 @@ class BountyAssets(TaskAssets):
     # 返回按钮
     I_BACK = ImageAsset(
         file=RES_DIR / "back.png",
-        region=((1050, 60), (1250, 210)),
+        region=((1050, 60), (1280, 210)),
         threshold=0.82,
         name='back',
     )
@@ -34,7 +34,7 @@ class BountyAssets(TaskAssets):
     # 普通协作标记
     I_COOPERATION = ImageAsset(
         file=RES_DIR / "cooperation.png",
-        region=((100, 220), (1260, 370)),
+        region=((90, 105), (1200, 165)),
         threshold=0.82,
         name='cooperation',
     )
@@ -42,7 +42,7 @@ class BountyAssets(TaskAssets):
     # 现世协作标记
     I_SHARING = ImageAsset(
         file=RES_DIR / "sharing.png",
-        region=((100, 220), (1260, 370)),
+        region=((90, 105), (1200, 165)),
         threshold=0.82,
         name='sharing',
     )
