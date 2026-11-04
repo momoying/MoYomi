@@ -186,7 +186,7 @@ class SettingsPageMixin:
                 ),
                 self.serverchan_status,
                 ft.Text(
-                    "仅在当前检测时段的悬赏与开放的奸商检测全部结束后推送一次；普通任务结束不推送。",
+                    "当前时段悬赏与开放的奸商检测全部结束后推送；相同内容不重复推送，结果变化时补发更新。",
                     size=11,
                     color=COLORS["muted"],
                 ),

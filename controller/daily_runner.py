@@ -65,14 +65,22 @@ def run(
         save_state(state, status_path)
         print("账号状态 JSON 已迁移为 v7 全账号跨区状态结构")
 
-    notification_finished = False
+    notification_blocked = False
 
     def try_detection_notification(at: datetime) -> None:
-        nonlocal notification_finished
-        if notification_finished:
+        nonlocal notification_blocked
+        if notification_blocked or not (
+            runtime_settings and runtime_settings.get("serverchan_enabled", False)
+        ):
+            return
+        try:
+            notification_state, _ = load_state(status_path)
+        except (OSError, ValueError) as exc:
+            print(f"[WARN] 无法读取推送所需的完整账号状态：{exc}")
+            notification_blocked = True
             return
         result = maybe_send_detection_summary(
-            state,
+            notification_state,
             at,
             enabled=bool(
                 runtime_settings
@@ -81,12 +89,9 @@ def run(
         )
         if result.status == "sent":
             print(f"[SUCCESS] {result.message}")
-            notification_finished = True
-        elif result.status in {"missing_key", "error"}:
+        elif result.status in {"missing_key", "error", "unconfirmed"}:
             print(f"[WARN] {result.message}")
-            notification_finished = True
-        elif result.status == "already_sent":
-            notification_finished = True
+            notification_blocked = True
 
     queue_time = now_provider()
     work_queue = (

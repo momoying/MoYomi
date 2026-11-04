@@ -31,6 +31,10 @@ class ServerChanError(RuntimeError):
     """A safe-to-log ServerChan error which never contains the SendKey."""
 
 
+class ServerChanDeliveryUnconfirmed(ServerChanError):
+    """The request may have arrived, but its acknowledgement was not received."""
+
+
 @dataclass(frozen=True)
 class NotificationResult:
     status: str
@@ -84,7 +88,7 @@ def send_serverchan(
     desp: str = "",
     *,
     send_key: Optional[str] = None,
-    timeout: float = 10.0,
+    timeout: float = 30.0,
     requester: Callable[..., Any] = requests.post,
 ) -> dict[str, Any]:
     """POST one ServerChan message without exposing its SendKey in errors."""
@@ -104,8 +108,15 @@ def send_serverchan(
                 "Content-Type": "application/json;charset=utf-8",
                 "Accept": "application/json",
             },
-            timeout=timeout,
+            timeout=(5.0, timeout),
         )
+    except requests.ConnectTimeout:
+        raise ServerChanError("连接 Server酱超时，未能建立连接") from None
+    except (requests.Timeout, requests.ConnectionError):
+        raise ServerChanDeliveryUnconfirmed(
+            "Server酱连接中断或回执超时，发送结果未确认；消息可能已送达，"
+            "本时段相同内容不自动重发，请查看接收端"
+        ) from None
     except requests.RequestException:
         raise ServerChanError("Server酱请求失败，请检查网络后重试") from None
 
@@ -129,7 +140,7 @@ def send_serverchan(
         )
 
     if payload is None:
-        raise ServerChanError("Server酱返回了无法解析的数据")
+        raise ServerChanDeliveryUnconfirmed("Server酱返回了无法解析的数据，发送结果未确认，请查看接收端")
     if not isinstance(payload, dict) or payload.get("code") != 0:
         code = payload.get("code") if isinstance(payload, dict) else "unknown"
         detail = ""
@@ -217,7 +228,7 @@ def build_detection_summary(
         record = _record(system_state, BOUNTY_TASK, region_key)
         checked = _parse_time(record.get("time"), now)
         result = record.get("bounty_result")
-        if checked is None or checked < slot_start or result not in bounty_counts:
+        if checked is None or not slot_start <= checked <= now or result not in bounty_counts:
             return None
         bounty_counts[result] += 1
 
@@ -233,12 +244,16 @@ def build_detection_summary(
         record = _record(system_state, MERCHANT_TASK)
         checked = _parse_time(record.get("time"), now)
         result = record.get("merchant_result")
-        if checked is None or checked < day_start or not isinstance(result, str):
+        if checked is None or not day_start <= checked <= now or not isinstance(result, str):
             return None
         merchant_results.append(result)
 
     lines = [
         "## 悬赏检测",
+        f"统计范围：同区 {sum(region == '同区' for _, region in bounty_targets)} / "
+        f"跨区 {sum(region == '跨区' for _, region in bounty_targets)}，"
+        f"合计 {len(bounty_targets)} 个角色。",
+        "",
         *(f"- {label}：{bounty_counts[key]}" for key, label in BOUNTY_RESULTS.items()),
     ]
     if merchant_targets:
@@ -259,19 +274,19 @@ def build_detection_summary(
     return slot_key, title, "\n".join(lines)
 
 
-def _load_sent_slot(path: Path) -> str:
+def _load_delivery_state(path: Path) -> dict[str, Any]:
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError, json.JSONDecodeError):
-        return ""
-    return str(payload.get("last_sent_slot", "")) if isinstance(payload, dict) else ""
+        return {}
+    return payload if isinstance(payload, dict) else {}
 
 
-def _save_sent_slot(path: Path, slot: str) -> None:
+def _save_delivery_state(path: Path, state: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_suffix(path.suffix + ".tmp")
     temporary.write_text(
-        json.dumps({"last_sent_slot": slot}, ensure_ascii=False, indent=2) + "\n",
+        json.dumps(state, ensure_ascii=False, indent=2) + "\n",
         encoding="utf-8",
     )
     os.replace(temporary, path)
@@ -297,14 +312,63 @@ def maybe_send_detection_summary(
         return NotificationResult("not_ready", "检测任务尚未全部完成")
     slot, title, desp = summary
     state_path = Path(state_path)
-    if _load_sent_slot(state_path) == slot:
+    previous = _load_delivery_state(state_path)
+    same_summary = (
+        previous.get("last_attempt_slot") == slot
+        and previous.get("last_attempt_summary") == desp
+    )
+    if same_summary and previous.get("last_attempt_status") in {"sending", "unconfirmed"}:
+        return NotificationResult("unconfirmed", "本时段相同摘要的发送结果未确认，请查看接收端；不自动重发")
+    if (
+        (same_summary and previous.get("last_attempt_status") == "sent")
+        or (previous.get("last_sent_slot") == slot and "last_attempt_slot" not in previous)
+    ):
         return NotificationResult("already_sent", "当前检测时段已推送")
+    delivery = {
+        **previous,
+        "last_attempt_slot": slot,
+        "last_attempt_title": title,
+        "last_attempt_summary": desp,
+        "last_attempt_status": "sending",
+        "last_attempt_targets": [
+            {
+                "account": account_name, "system": system_name, "region": region,
+                **_record(system_state, BOUNTY_TASK, region),
+            }
+            for account_name, account in state.get("accounts", {}).items()
+            for system_name, system_state in account.get("systems", {}).items()
+            for region, included in (
+                ("同区", _enabled(system_state, BOUNTY_TASK)),
+                ("跨区", system_state.get("cross_region_enabled") is True),
+            )
+            if included
+        ],
+    }
+    # 先落盘再请求；进程中断后保留未确认状态，避免相同内容重复送达。
+    try:
+        _save_delivery_state(state_path, delivery)
+    except OSError:
+        return NotificationResult("error", "无法保存 Server酱待发送摘要，未发送消息，请检查本地文件权限")
     try:
         sender(title, desp)
-        _save_sent_slot(state_path, slot)
-    except (ServerChanError, OSError, ValueError) as exc:
-        return NotificationResult("error", str(exc))
-    return NotificationResult("sent", "Server酱检测结果摘要已发送")
+    except ServerChanDeliveryUnconfirmed as exc:
+        delivery["last_attempt_status"] = "unconfirmed"
+        result = NotificationResult("unconfirmed", str(exc))
+    except (ServerChanError, ValueError) as exc:
+        delivery["last_attempt_status"] = "failed"
+        result = NotificationResult("error", str(exc))
+    else:
+        delivery.update(last_sent_slot=slot, last_attempt_status="sent")
+        result = NotificationResult(
+            "sent", f"Server酱检测结果摘要已发送（{len(delivery['last_attempt_targets'])} 个角色）",
+        )
+    try:
+        _save_delivery_state(state_path, delivery)
+    except OSError:
+        return NotificationResult(
+            "unconfirmed", "Server酱请求已结束，但本地发送状态保存失败；请查看接收端，不自动重发",
+        )
+    return result
 
 
 def set_project_sendkey(send_key: str, path: Path = ENV_PATH) -> None:

@@ -39,10 +39,10 @@ utils.config["screenshot_speed"] = SCREENSHOT_INTERVAL
 
 
 
-# “协/享”位于卡牌右上角；根据模板左边反推同一卡牌的水平范围，
+# “协/享”位于卡牌左下侧；根据模板左边反推同一卡牌的水平范围，
 # 再只在该卡牌底部奖励区查找勾玉。
-CARD_LEFT_OFFSET_FROM_COOPERATION = 221
-CARD_WIDTH = 262
+CARD_LEFT_OFFSET_FROM_COOPERATION = 15
+CARD_WIDTH = 250
 REWARD_TOP = 530
 REWARD_BOTTOM = 610
 MAX_VISIBLE_CARDS = 6

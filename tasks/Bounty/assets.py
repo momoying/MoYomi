@@ -34,7 +34,7 @@ class BountyAssets(TaskAssets):
     # 普通协作标记
     I_COOPERATION = ImageAsset(
         file=RES_DIR / "cooperation.png",
-        region=((90, 105), (1200, 165)),
+        region=((100, 220), (1260, 370)),
         threshold=0.82,
         name='cooperation',
     )
@@ -42,7 +42,7 @@ class BountyAssets(TaskAssets):
     # 现世协作标记
     I_SHARING = ImageAsset(
         file=RES_DIR / "sharing.png",
-        region=((90, 105), (1200, 165)),
+        region=((100, 220), (1260, 370)),
         threshold=0.82,
         name='sharing',
     )
