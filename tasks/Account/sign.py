@@ -9,7 +9,6 @@
 from __future__ import annotations
 
 import argparse
-import os
 import random
 import sys
 import time
@@ -28,7 +27,7 @@ from module import automation as utils
 from module.base.device import TaskDevice
 from module.task_execution import report_failure
 from module.logging import TaskLogger
-from module.model_paths import OCR_MODEL_DIR
+from module.ocr import create_ocr
 from module.region_settings import load_region_names
 
 
@@ -113,18 +112,7 @@ def _get_ocr_engine():
     if _ocr_engine is not None:
         return _ocr_engine
 
-    os.environ.setdefault("PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK", "True")
-    from paddleocr import PaddleOCR
-
-    model_dir = OCR_MODEL_DIR
-    _ocr_engine = PaddleOCR(
-        det_model_dir=str(model_dir / "ch_PP-OCRv4_det_infer"),
-        rec_model_dir=str(model_dir / "ch_PP-OCRv4_rec_infer"),
-        cls_model_dir=str(model_dir / "ch_ppocr_mobile_v2.0_cls_infer"),
-        lang="ch",
-        show_log=False,
-        use_gpu=False,
-    )
+    _ocr_engine = create_ocr()
     return _ocr_engine
 
 

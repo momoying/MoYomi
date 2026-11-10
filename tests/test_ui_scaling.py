@@ -42,6 +42,7 @@ class WindowScalingTests(unittest.TestCase):
         dashboard._safe_update = Mock()
         with patch("ui_app.pages.layout.windows_work_area", return_value=(1920, 1032)):
             dashboard._configure_window()
+        self.assertIsNone(dashboard.page.window.alignment)
         self.assertAlmostEqual(dashboard.page.window.aspect_ratio, 1350 / 860)
         self.assertTrue(dashboard.page.window.maximizable)
         with patch("ui_app.pages.layout.windows_work_area", return_value=(1280, 688)):

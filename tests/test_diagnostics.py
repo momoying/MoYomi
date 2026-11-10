@@ -6,7 +6,11 @@ import tempfile
 import unittest
 from pathlib import Path
 
+import cv2
+import numpy as np
+
 import ui
+from module import automation
 from module.diagnostics import ErrorScreenshotManager
 from module.notifications import STATE_PATH
 
@@ -39,6 +43,22 @@ class _Backend:
 
 
 class ErrorScreenshotTests(unittest.TestCase):
+    def test_chinese_directory_and_filename_are_written_without_encoding_conversion(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            directory = Path(temp_dir) / "报错截图"
+            frame = np.full((12, 20, 3), 123, dtype=np.uint8)
+            manager = ErrorScreenshotManager(backend=automation, directory=directory)
+            saved = Path(manager.save("超鬼王刷票", "票数识别失败", frame=frame))
+            self.assertTrue(saved.is_file())
+            self.assertIn("超鬼王刷票_票数识别失败", saved.name)
+            decoded = cv2.imdecode(np.frombuffer(saved.read_bytes(), dtype=np.uint8), cv2.IMREAD_COLOR)
+            np.testing.assert_array_equal(decoded, frame)
+            capture = object.__new__(automation._MuMuIpcCapture)
+            capture.capture_frame = lambda: frame
+            legacy_path = directory / "旧截图接口.png"
+            self.assertEqual(capture.capture_to_file(str(legacy_path)), str(legacy_path))
+            self.assertTrue(legacy_path.is_file())
+
     def test_cached_frame_is_preferred_and_filename_contains_context(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             backend = _Backend(cached="cached", captured="fresh")

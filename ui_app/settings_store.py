@@ -132,6 +132,13 @@ def load_ui_settings(path: Path = SETTINGS_PATH) -> dict[str, Any]:
     settings["serverchan_enabled"] = bool(
         settings.get("serverchan_enabled", False)
     )
+    settings["baigui_preset_name"] = DEFAULT_SETTINGS["baigui_preset_name"]
+    nickname = settings.get("baigui_nickname")
+    settings["baigui_nickname"] = nickname.strip() if isinstance(nickname, str) else ""
+    settings.pop("baigui_stop_mode", None)
+    settings.pop("baigui_match_limit", None)
+    if type(settings.get("baigui_return_home")) is not bool:
+        settings["baigui_return_home"] = True
     if not isinstance(settings.get("monet_palette"), dict):
         settings["monet_palette"] = {}
     return settings

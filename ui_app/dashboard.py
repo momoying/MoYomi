@@ -597,6 +597,7 @@ class AssistantDashboard(
             "等待启动",
             size=12,
             color=COLORS["muted"],
+            expand=True,
         )
         self.tool_description = ft.Text(
             TOOL_DESCRIPTIONS[self.active_tool],

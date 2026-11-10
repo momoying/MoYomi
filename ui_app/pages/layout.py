@@ -19,7 +19,6 @@ class LayoutMixin:
     def _configure_window(self) -> None:
         self._window_work_area = None
         self.page.window.aspect_ratio = WINDOW_WIDTH / WINDOW_HEIGHT
-        self.page.window.alignment = ft.Alignment.CENTER
         self.page.window.on_event = self._on_window_event
         self.page.on_media_change = self._on_display_metrics_change
         self._fit_window_to_screen(initial=True)

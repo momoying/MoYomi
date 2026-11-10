@@ -775,7 +775,7 @@ class SettingsPageMixin:
 
 
     def refresh_mumu_instances(self, _event: Any = None) -> None:
-        if self.running:
+        if self.running or self.tool_running:
             return
         current_index = str(self.mumu_instance.value or "")
         mumu_path = str(self.mumu_path_field.value or DEFAULT_MUMU_PATH)
@@ -805,6 +805,8 @@ class SettingsPageMixin:
             selected_index = None
         self.mumu_instance.options = self._mumu_dropdown_options()
         self.mumu_instance.value = selected_index
+        if hasattr(self, "super_oni_primary"):
+            self._refresh_super_oni_options()
         self._update_mumu_status()
         if self.mumu_instances:
             self.settings_message.value = "已重新扫描"
@@ -971,7 +973,18 @@ class SettingsPageMixin:
         settings = self._read_settings_from_fields()
         if settings is None:
             return False
+        if hasattr(self, "baigui_options_control"):
+            try:
+                settings.update(self._baigui_settings_values())
+            except ValueError as exc:
+                self.settings_message.value = str(exc)
+                self.settings_message.color = COLORS["error"]
+                self._safe_update()
+                return False
         try:
+            if hasattr(self, "super_oni_primary"):
+                settings["super_oni_instances"] = [str(field.value) for field in
+                    (self.super_oni_primary, self.super_oni_secondary) if field.value]
             save_ui_settings(settings)
         except OSError as exc:
             self.settings_message.value = f"保存失败：{exc}"

@@ -73,11 +73,13 @@ class TaskDevice:
         label: Optional[str] = None,
         rect: Optional[Rect] = None,
         stage: Optional[str] = None,
+        retry_on_failure: bool = True,
     ):
         check_stopped()
         if self.logger is not None and label and rect is not None:
             self.logger.click(stage or label, label, rect, (int(x), int(y)))
-        return self.backend.adb_click(int(x), int(y))
+        options = {} if retry_on_failure else {"retry_on_failure": False}
+        return self.backend.adb_click(int(x), int(y), **options)
 
     def click_rect(
         self,
@@ -109,14 +111,16 @@ class TaskDevice:
         check_stopped()
         return self.backend.click_template_until_disappears(*args, **kwargs)
 
-    def swipe(self, start_x, start_y, end_x, end_y, duration_ms=800):
+    def swipe(self, start_x, start_y, end_x, end_y, duration_ms=800, *, retry_on_failure=True):
         check_stopped()
+        options = {} if retry_on_failure else {"retry_on_failure": False}
         return self.backend.adb_swipe(
             start_x,
             start_y,
             end_x,
             end_y,
             duration_ms=duration_ms,
+            **options,
         )
 
     def keyevent(self, keycode):

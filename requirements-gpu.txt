@@ -1,0 +1,9 @@
+# 与requirements.txt二选一；切换时先卸载paddlepaddle和paddlepaddle-gpu。
+-r requirements-common.txt
+paddlepaddle-gpu==2.6.2
+
+# Windows下为Paddle 2.6.2提供私有CUDA 11.8/cuDNN 8运行库。
+# 不要求卸载/更改系统已有CUDA 12.x，CPU用户无需安装。
+nvidia-cuda-runtime-cu11==11.8.89; sys_platform == 'win32'
+nvidia-cublas-cu11==11.11.3.6; sys_platform == 'win32'
+nvidia-cudnn-cu11==8.9.5.29; sys_platform == 'win32'

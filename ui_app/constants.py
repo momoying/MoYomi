@@ -18,15 +18,22 @@ TOOL_MODULE_PATHS = {
     "story_skip": TOOLS_DIR / "StorySkip" / "story_skip.py",
     "secret_battle": TOOLS_DIR / "SecretBattle" / "secret_battle.py",
     "market_sniper": TOOLS_DIR / "MarketSniper" / "market_sniper.py",
+    "super_oni": TOOLS_DIR / "SuperOni" / "super_oni.py",
+    "baigui": TOOLS_DIR / "Baigui" / "baigui.py",
 }
 
 TOOL_LABELS = {
     "story_skip": "剧情跳过",
     "secret_battle": "一键秘闻",
     "market_sniper": "抢商品",
+    "super_oni": "超鬼王刷票",
+    # 百鬼棋局仍在完善，始终保留在工具栏最右侧；新工具放在它前面。
+    "baigui": "百鬼棋局",
 }
 
 TOOL_DESCRIPTIONS = {
+    "super_oni": "从觉醒一层界面启动，自动锁定阵容、开启觉醒加成并重复刷票；达到 50/50 后关闭觉醒加成，返回觉醒一层停止。",
+    "baigui": "操作当前账号，每次完成一局。六级金鱼姬（荒川）阵容，正常保留50金币，升至8阶再刷新；低于30血不留本金。",
     "story_skip": (
         "自动识别并处理剧情跳过、对话气泡、挑战、"
         "战斗准备和战斗奖励。每帧最多点击一个最高优先级目标。"
@@ -40,6 +47,10 @@ TOOL_DESCRIPTIONS = {
         "发现商品后随机点击第一行并购买。每次刷新间隔随机 1–2 秒。"
     ),
 }
+
+if not TOOL_MODULE_PATHS["baigui"].is_file():
+    for registry in (TOOL_MODULE_PATHS, TOOL_LABELS, TOOL_DESCRIPTIONS):
+        registry.pop("baigui")
 
 DEFAULT_ADB_PATH = r"D:\Program Files\Netease\MuMu\nx_main\adb.exe"
 
@@ -63,6 +74,9 @@ DEFAULT_SETTINGS = {
     "adb_port": None,
     "secret_battle_attempts": 0,
     "market_sniper_refresh_count": 0,
+    "baigui_preset_name": "六级金鱼姬",
+    "baigui_nickname": "",
+    "baigui_return_home": True,
     "wallpaper_path": "",
     "wallpaper_opacity": 0.46,
     "wallpaper_blur": 4.0,

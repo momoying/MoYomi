@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+import threading
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, Optional
@@ -15,6 +16,7 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 ERROR_SCREENSHOT_DIR = PROJECT_ROOT / "error_screenshots"
 DEFAULT_KEEP_COUNT = 20
 LOGGER = TaskLogger("报错截图")
+_SAVE_LOCK = threading.RLock()
 
 
 def _slug(value: object, fallback: str) -> str:
@@ -90,6 +92,13 @@ class ErrorScreenshotManager:
             return None
 
     def save(
+        self, task: str, stage: str, *, attempt: int = 1, frame=None,
+        keep_count: Optional[int] = None,
+    ) -> Optional[str]:
+        with _SAVE_LOCK:
+            return self._save(task, stage, attempt=attempt, frame=frame, keep_count=keep_count)
+
+    def _save(
         self,
         task: str,
         stage: str,

@@ -1,7 +1,9 @@
 import ctypes
+import importlib.util
 import os
 import subprocess
 import time
+import threading
 from contextlib import contextmanager
 from ctypes import c_int, c_uint, c_wchar_p, c_char_p, POINTER, c_ubyte
 from pathlib import Path
@@ -11,9 +13,17 @@ import numpy as np
 
 from module.task_execution import check_stopped, record_frame
 
+_NATIVE_OUTPUT_LOCK = threading.RLock()
+
 
 @contextmanager
 def _suppress_native_output():
+    with _NATIVE_OUTPUT_LOCK, _suppress_native_output_unlocked():
+        yield
+
+
+@contextmanager
+def _suppress_native_output_unlocked():
     if os.name != "nt":
         yield
         return
@@ -76,7 +86,7 @@ def _suppress_native_output():
 def load_config():
     config_data = {
         "adb_path": r"D:\Program Files\Netease\MuMu\nx_main\adb.exe",
-        "adb_port": "127.0.0.1:16384",  # 16384 16416
+        "adb_port": "127.0.0.1:16416",  # 16384 16416
         "screenshot_speed": 0.5,
 
         # MuMu 快速截图配置
@@ -370,8 +380,7 @@ class _MuMuIpcCapture:
         兼容旧接口：需要保存截图时才写入磁盘。
         """
         frame = self.capture_frame()
-        ok = cv2.imwrite(output_path, frame)
-        if not ok:
+        if not _write_screenshot(output_path, frame):
             raise RuntimeError(f"写入截图失败：{output_path}")
         return output_path
 
@@ -616,6 +625,14 @@ def get_last_screenshot() -> np.ndarray | None:
     return _latest_screenshot_frame
 
 
+def _write_screenshot(output_path, frame):
+    """由 Python 写 Unicode 路径，避免 Windows 下 imwrite 将中文文件名写成乱码。"""
+    ok, encoded = cv2.imencode(Path(output_path).suffix or ".png", frame)
+    if ok:
+        Path(output_path).write_bytes(encoded.tobytes())
+    return ok
+
+
 def save_screenshot(output_path: str = "screenshot.png", frame: np.ndarray | None = None) -> str | None:
     """
     显式保存截图到磁盘。
@@ -630,12 +647,22 @@ def save_screenshot(output_path: str = "screenshot.png", frame: np.ndarray | Non
         print(f"保存截图失败：没有可保存的截图帧，output_path={output_path}")
         return None
 
-    ok = cv2.imwrite(output_path, frame)
+    ok = _write_screenshot(output_path, frame)
     if not ok:
         print(f"保存截图失败：{output_path}")
         return None
 
     return output_path
+
+
+def create_session():
+    """复用设备实现，给并行实例独立的配置、ADB 连接、IPC 句柄和帧缓存。"""
+    spec = importlib.util.spec_from_file_location("moyomi_device_session", __file__)
+    session = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(session)
+    # native 输出重定向涉及整个进程，仅初始化连接时共用一把锁。
+    session._suppress_native_output = _suppress_native_output
+    return session
 
 
 def _load_template(template_path: str) -> np.ndarray:
@@ -715,12 +742,12 @@ def crop_and_match(top_left, bottom_right, template_path, screenshot_path=None, 
     return max_val, (match_left, match_top, match_right, match_bottom)
 
 
-def _run_adb_device_command(arguments, timeout=8, label="ADB命令"):
-    """执行设备命令；失败时强制重连一次并重试。"""
+def _run_adb_device_command(arguments, timeout=8, label="ADB命令", *, retry_on_failure=True):
+    """执行设备命令；消费类动作可关闭失败重发，交由任务复核结果。"""
     check_stopped()
     command = [adb_path, "-s", adb_port, *arguments]
     last_error = ""
-    for attempt in range(2):
+    for attempt in range(2 if retry_on_failure else 1):
         check_stopped()
         try:
             result = subprocess.run(
@@ -740,7 +767,7 @@ def _run_adb_device_command(arguments, timeout=8, label="ADB命令"):
             last_error = str(exc)
 
         _invalidate_adb_connection()
-        if attempt == 0 and connect_to_mumu(force=True):
+        if retry_on_failure and attempt == 0 and connect_to_mumu(force=True):
             continue
         break
 
@@ -748,11 +775,12 @@ def _run_adb_device_command(arguments, timeout=8, label="ADB命令"):
     return False
 
 
-def adb_click(x, y):
+def adb_click(x, y, *, retry_on_failure=True):
     return _run_adb_device_command(
         ["shell", "input", "tap", str(x), str(y)],
         timeout=8,
         label="ADB点击",
+        retry_on_failure=retry_on_failure,
     )
 
 
@@ -864,7 +892,7 @@ def click_template_until_disappears(
     return False
 
 
-def adb_swipe(start_x, start_y, end_x, end_y, duration_ms=800):
+def adb_swipe(start_x, start_y, end_x, end_y, duration_ms=800, *, retry_on_failure=True):
     """
     通过 ADB 执行可控时长的滑动手势。
 
@@ -884,6 +912,7 @@ def adb_swipe(start_x, start_y, end_x, end_y, duration_ms=800):
         ],
         timeout=max(8, duration_ms / 1000 + 3),
         label="ADB滑动",
+        retry_on_failure=retry_on_failure,
     )
 
 

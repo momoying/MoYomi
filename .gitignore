@@ -12,6 +12,8 @@ env/
 
 # Local coding and maintenance notes
 DEVELOPMENT_GUIDE.md
+# Reverse-engineering evidence, historical notes, benchmarks and local test environments
+/analysis/
 
 # User-specific runtime state and machine paths
 config/account_status.json
@@ -28,8 +30,14 @@ models/
 # Runtime logs and diagnostic screenshots
 *.log
 /error_screenshots/
+/config/baigui/sessions/
 /module/screenshot.png
 
 # Temporary files written by atomic JSON saves
 *.tmp
 /config/weekly_account_status.json
+
+# Unreleased Baigui prototype, local tests and screenshot fixtures
+/tasks/Baigui/
+/tests/test_baigui*.py
+/tests/fixtures/baigui/

@@ -215,6 +215,12 @@ class UiRuntimeMixin:
                             self._apply_tool_finished(**payload)
                         elif event_type == "secret_attempts":
                             self._apply_secret_attempts(payload)
+                        elif event_type == "baigui_progress":
+                            self._apply_baigui_progress(payload)
+                        elif event_type == "super_oni_progress":
+                            self._apply_super_oni_progress(payload)
+                        elif event_type == "super_oni_result":
+                            self._apply_super_oni_result(payload)
                     except asyncio.CancelledError:
                         raise
                     except Exception as exc:
