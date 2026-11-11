@@ -219,6 +219,7 @@ def build_detection_summary(
         (system_state, "跨区")
         for system_state in systems
         if system_state.get("cross_region_enabled") is True
+        and system_state.get("cross_region_task_enabled", {}).get(BOUNTY_TASK, True) is not False
     )
     if not bounty_targets:
         return None
@@ -339,7 +340,8 @@ def maybe_send_detection_summary(
             for system_name, system_state in account.get("systems", {}).items()
             for region, included in (
                 ("同区", _enabled(system_state, BOUNTY_TASK)),
-                ("跨区", system_state.get("cross_region_enabled") is True),
+                ("跨区", system_state.get("cross_region_enabled") is True
+                 and system_state.get("cross_region_task_enabled", {}).get(BOUNTY_TASK, True) is not False),
             )
             if included
         ],

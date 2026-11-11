@@ -46,7 +46,8 @@ def run_super_oni_targets(settings, targets, stop_event, load_tool, emit):
                 task.LOGGER = TaskLogger(f"超鬼王刷票/实例 {index}")
                 task.DEVICE = TaskDevice(backend, task.LOGGER)
                 task.BATTLE_SCREENSHOT_INTERVAL = float(settings["battle_detection_interval"])
-                return task.run(stop_event=stop_event, progress_callback=progress)
+                return task.run(stop_event=stop_event, progress_callback=progress,
+                                enable_bonus=target.get("enable_bonus", True))
 
             result, report = run_task_call(run, stop_event=stop_event)
             success = bool(result) or report.cancelled

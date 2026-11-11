@@ -9,6 +9,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 import main
+import flet as ft
 import ui
 from controller import scheduler, state_store, task_services
 from module import notifications
@@ -195,6 +196,21 @@ class UiCompatibilityTests(unittest.TestCase):
             dashboard = AssistantDashboard(page)
         self.assertEqual(len(page.controls), 1)
         self.assertTrue(dashboard.cards)
+        with patch.object(dashboard, "_panel", side_effect=lambda _title, _icon, content, **_kwargs: content):
+            settings = dashboard._build_task_settings_panel()
+        controls = settings.controls
+        same_heading = next(c for c in controls if isinstance(c, ft.Text) and c.value == "同区任务")
+        same_grid = next(c for c in controls if isinstance(c, ft.ResponsiveRow))
+        cross_grid = next(c for c in dashboard.cross_region_tasks_control.controls if isinstance(c, ft.ResponsiveRow))
+        self.assertEqual(dashboard.cross_region_enabled.label, "启用跨区账号")
+        self.assertLess(controls.index(same_heading), controls.index(dashboard.cross_region_enabled))
+        self.assertLess(controls.index(same_grid), controls.index(dashboard.cross_region_tasks_control))
+        for grid, checks in ((same_grid, dashboard.task_settings_checks),
+                             (cross_grid, dashboard.cross_region_task_checks)):
+            self.assertEqual(grid.columns, 12)
+            self.assertEqual([cell.content for cell in grid.controls], list(checks.values()))
+            self.assertTrue(all(cell.col == {"sm": 6, "md": 6} for cell in grid.controls))
+            self.assertEqual((grid.spacing, grid.run_spacing), (4, 2))
 
     def test_root_ui_is_only_a_compatibility_entrypoint(self):
         self.assertLessEqual(len((PROJECT_ROOT / "ui.py").read_text(encoding="utf-8").splitlines()), 25)

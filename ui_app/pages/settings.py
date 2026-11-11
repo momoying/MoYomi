@@ -376,13 +376,7 @@ class SettingsPageMixin:
                     size=11,
                     color=COLORS["muted"],
                 ),
-                self.cross_region_enabled,
-                ft.Text(
-                    f"每个账号及系统均可独立启用；{controller.REGION_LABELS[controller.CROSS_REGION]}固定执行悬赏检测和两位跨区好友点赞。",
-                    size=11,
-                    color=COLORS["muted"],
-                ),
-                ft.Divider(height=10, color=COLORS["border"]),
+                ft.Text("同区任务", size=13, weight=ft.FontWeight.BOLD),
                 task_checks,
                 self.heart_team_role_setting,
                 ft.Text(
@@ -390,6 +384,14 @@ class SettingsPageMixin:
                     size=11,
                     color=COLORS["muted"],
                 ),
+                ft.Divider(height=10, color=COLORS["border"]),
+                self.cross_region_enabled,
+                ft.Text(
+                    "开启后可独立选择跨区日常任务，与同区任务及完成进度分开保存。",
+                    size=11,
+                    color=COLORS["muted"],
+                ),
+                self.cross_region_tasks_control,
                 ft.Row(
                     [
                         ft.Button(
@@ -470,6 +472,7 @@ class SettingsPageMixin:
                 checkbox.disabled = True
             self.cross_region_enabled.disabled = True
             self.cross_region_enabled.value = False
+            self.cross_region_tasks_control.visible = False
             self.heart_team_role_setting.disabled = True
             self.heart_team_role_setting.value = "none"
             if update:
@@ -522,6 +525,13 @@ class SettingsPageMixin:
             isinstance(system_state, dict)
             and controller.cross_region_is_enabled(system_state)
         )
+        self.cross_region_tasks_control.visible = bool(self.cross_region_enabled.value)
+        for task, checkbox in self.cross_region_task_checks.items():
+            checkbox.disabled = system_state is None or not self.cross_region_enabled.value
+            checkbox.value = controller.cross_region_task_is_enabled(system_state, task) if system_state is not None else False
+        cross_state = controller.cross_region_task_state(system_state, controller.HEART_TEAM_TASK) if system_state is not None else {}
+        self.cross_region_heart_role.value = controller.heart_team_role(cross_state) or "none"
+        self.cross_region_heart_role.disabled = system_state is None or not self.cross_region_enabled.value
         self.heart_team_role_setting.disabled = system_state is None
         selected_heart_role = (
             controller.heart_team_role(system_state)
@@ -542,6 +552,10 @@ class SettingsPageMixin:
 
 
     def _on_cross_region_setting_changed(self, _event: Any = None) -> None:
+        self.cross_region_tasks_control.visible = bool(self.cross_region_enabled.value)
+        self.cross_region_heart_role.disabled = not self.cross_region_enabled.value
+        for checkbox in self.cross_region_task_checks.values():
+            checkbox.disabled = not self.cross_region_enabled.value
         self.task_settings_message.value = "尚未保存"
         self.task_settings_message.color = COLORS["warning"]
         self._safe_update()
@@ -566,6 +580,9 @@ class SettingsPageMixin:
             return
         for checkbox in self.task_settings_checks.values():
             checkbox.value = enabled
+        if self.cross_region_enabled.value:
+            for checkbox in self.cross_region_task_checks.values():
+                checkbox.value = enabled
         if (
             self.heart_team_role_setting.value
             not in controller.HEART_TEAM_ROLES
@@ -605,6 +622,15 @@ class SettingsPageMixin:
             system_state["cross_region_enabled"] = bool(
                 self.cross_region_enabled.value
             )
+            system_state["cross_region_task_enabled"] = {
+                task: bool(checkbox.value) for task, checkbox in self.cross_region_task_checks.items()
+            }
+            cross_state = controller.cross_region_task_state(system_state, controller.HEART_TEAM_TASK)
+            cross_role = self.cross_region_heart_role.value
+            if (system_state["cross_region_enabled"] and system_state["cross_region_task_enabled"].get(controller.HEART_TEAM_TASK)
+                    and cross_role not in controller.HEART_TEAM_ROLES):
+                raise ValueError("启用跨区同心队前请选择跨区同心队身份")
+            controller.set_heart_team_role(cross_state, cross_role if cross_role in controller.HEART_TEAM_ROLES else None)
             selected_heart_role = str(self.heart_team_role_setting.value)
             controller.set_heart_team_role(
                 system_state,
@@ -985,6 +1011,7 @@ class SettingsPageMixin:
             if hasattr(self, "super_oni_primary"):
                 settings["super_oni_instances"] = [str(field.value) for field in
                     (self.super_oni_primary, self.super_oni_secondary) if field.value]
+                settings["super_oni_bonus"] = [bool(self.super_oni_primary_bonus.value), bool(self.super_oni_secondary_bonus.value)]
             save_ui_settings(settings)
         except OSError as exc:
             self.settings_message.value = f"保存失败：{exc}"

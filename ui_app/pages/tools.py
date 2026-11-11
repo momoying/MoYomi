@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import importlib.util
 import sys
+import threading
 from contextlib import redirect_stderr, redirect_stdout
 from typing import Any, Optional
 
@@ -16,8 +17,15 @@ from ui_app.settings_store import *
 
 class ToolsPageMixin:
     def _build_super_oni_controls(self):
+        self._super_oni_runs = {}
+        self._super_oni_run_results = {}
+        self._super_oni_lock = threading.RLock()
         saved = self.settings.get("super_oni_instances", [])
         saved = saved if isinstance(saved, list) else []
+        bonus = self.settings.get("super_oni_bonus", [True, True])
+        bonus = bonus if isinstance(bonus, list) and len(bonus) == 2 else [True, True]
+        self.super_oni_primary_bonus = ft.Checkbox(label="使用觉醒加成", value=bonus[0] is not False)
+        self.super_oni_secondary_bonus = ft.Checkbox(label="使用觉醒加成", value=bonus[1] is not False)
         self.super_oni_primary = ft.Dropdown(
             label="模拟器 1", value=str(saved[0]) if saved else None, dense=True,
             on_select=self._on_super_oni_instance_changed, expand=True,
@@ -35,11 +43,22 @@ class ToolsPageMixin:
             size=12, color=COLORS["muted"],
         )
         self.super_oni_secondary_progress = ft.Text(size=12, color=COLORS["muted"], visible=False)
+        self.super_oni_primary_start = ft.Button(
+            content="启动模拟器 1", icon=ft.Icons.PLAY_ARROW_ROUNDED,
+            on_click=lambda _event: self._toggle_super_oni_slot(0),
+        )
+        self.super_oni_secondary_start = ft.Button(
+            content="启动模拟器 2", icon=ft.Icons.PLAY_ARROW_ROUNDED,
+            on_click=lambda _event: self._toggle_super_oni_slot(1),
+        )
         self._refresh_super_oni_options()
         self.super_oni_options_control = ft.Column(
-            [ft.Row([self.super_oni_primary, self.super_oni_refresh]), self.super_oni_secondary,
-             self.super_oni_progress, self.super_oni_secondary_progress,
-             ft.Text("启动时自动检查阵容上锁并开启觉醒加成；支持中途继续，刷满后关闭加成并返回觉醒一层。",
+            [ft.Row([self.super_oni_primary, self.super_oni_refresh]), self.super_oni_primary_bonus,
+             self.super_oni_primary_start, self.super_oni_progress,
+             ft.Divider(height=8, color=COLORS["border"]),
+             self.super_oni_secondary, self.super_oni_secondary_bonus,
+             self.super_oni_secondary_start, self.super_oni_secondary_progress,
+             ft.Text("自动锁阵；按各实例的选择开启或关闭觉醒加成。支持中途继续，刷满后关闭使用的加成并返回觉醒一层。",
                      size=12, color=COLORS["muted"])],
             spacing=8, visible=False,
         )
@@ -55,6 +74,7 @@ class ToolsPageMixin:
         secondary = next((item for item in instances if str(item["index"]) == self.super_oni_secondary.value), None)
         if secondary is None or primary is not None and secondary["adb_port"] == primary["adb_port"]:
             self.super_oni_secondary.value = ""
+        self.super_oni_secondary_bonus.visible = bool(self.super_oni_secondary.value)
         for field, other in ((self.super_oni_primary, self.super_oni_secondary),
                              (self.super_oni_secondary, self.super_oni_primary)):
             selected = next((item for item in instances if str(item["index"]) == other.value), None)
@@ -62,7 +82,8 @@ class ToolsPageMixin:
                 ft.DropdownOption(key=str(item["index"]), text=f'{item["name"]} · 实例 {item["index"]}')
                 for item in instances if selected is None or item["adb_port"] != selected["adb_port"]
             ]
-        self._reset_super_oni_results()
+        self._reset_super_oni_results(preserve=True)
+        self._sync_super_oni_controls()
 
     def _refresh_super_oni_instances(self, _event=None):
         if self.tool_running:
@@ -76,54 +97,178 @@ class ToolsPageMixin:
         self._safe_update()
 
     def _on_super_oni_instance_changed(self, _event=None):
-        if getattr(self, "tool_running", False):
+        if getattr(self, "tool_running", False) and self.active_tool != "super_oni":
             return
         self.super_oni_primary.error_text = None
         self.super_oni_secondary.error_text = None
         self._refresh_super_oni_options()
         self._safe_update()
 
-    def _reset_super_oni_results(self, stage="等待启动"):
+    def _reset_super_oni_results(self, stage="等待启动", *, preserve=False, slots=None):
+        previous = getattr(self, "_super_oni_rows", {})
         self._super_oni_rows = {}
-        for field, control in ((self.super_oni_primary, self.super_oni_progress),
-                               (self.super_oni_secondary, self.super_oni_secondary_progress)):
+        for slot, (field, control) in enumerate(((self.super_oni_primary, self.super_oni_progress),
+                                                (self.super_oni_secondary, self.super_oni_secondary_progress))):
             index = str(field.value or "")
+            if index:
+                self._super_oni_rows[index] = control
+            if (slots is not None and slot not in slots) or (preserve and previous.get(index) is control):
+                continue
             item = next((item for item in getattr(self, "mumu_instances", []) if str(item["index"]) == index), None)
             control.visible = field is self.super_oni_primary or item is not None
             label = f'{item["name"]} · 实例 {index}\n' if item else ""
             control.value = label + f"已获得：未识别 / 50 张\n本次挑战：0 次\n阶段：{stage}"
             control.color = COLORS["muted"]
-            if index:
-                self._super_oni_rows[index] = control
 
-    def _selected_super_oni_targets(self):
+    def _selected_super_oni_targets(self, slots=None):
         indexes = [str(field.value or "") for field in (self.super_oni_primary, self.super_oni_secondary)]
         self.super_oni_primary.error_text = None
         self.super_oni_secondary.error_text = None
-        if not indexes[0]:
+        if not indexes[0] and (slots is None or 0 in slots):
             self.super_oni_primary.error_text = "请选择正在运行的实例"
             raise ValueError("请至少选择一个 MuMu 实例")
         if indexes[1] and indexes[0] == indexes[1]:
             self.super_oni_secondary.error_text = "两个模拟器不能相同"
             raise ValueError("两个模拟器不能选择同一个实例")
         targets = []
-        for index in filter(None, indexes):
+        for slot, index in enumerate(indexes):
+            if slots is not None and slot not in slots:
+                continue
+            if not index:
+                if slots is not None:
+                    self.super_oni_secondary.error_text = "请选择正在运行的实例"
+                    raise ValueError("请先选择模拟器 2")
+                continue
             target = next((item for item in getattr(self, "mumu_instances", []) if str(item["index"]) == index), None)
             if target is None:
                 raise ValueError("所选 MuMu 实例已不可用，请刷新实例列表")
-            targets.append(dict(target))
+            bonus = self.super_oni_primary_bonus if slot == 0 else self.super_oni_secondary_bonus
+            targets.append(dict(target, enable_bonus=bool(bonus.value)))
         if len({item["adb_port"] for item in targets}) != len(targets):
             raise ValueError("所选实例的 ADB 地址重复，请刷新实例列表")
         return targets
 
+    def _sync_super_oni_controls(self):
+        busy = getattr(self, "tool_running", False)
+        stopping_all = busy and self.tool_stop_event.is_set()
+        other_tool = busy and self.active_tool != "super_oni"
+        for slot, (field, bonus, button) in enumerate((
+                (self.super_oni_primary, self.super_oni_primary_bonus, self.super_oni_primary_start),
+                (self.super_oni_secondary, self.super_oni_secondary_bonus, self.super_oni_secondary_start))):
+            run = self._super_oni_runs.get(slot)
+            stopping = run is not None and run["stop_event"].is_set()
+            field.disabled = bonus.disabled = other_tool or run is not None or stopping_all
+            button.disabled = other_tool or stopping_all or stopping or not field.value
+            button.content = f"{'停止中' if stopping else '停止' if run else '启动'}模拟器 {slot + 1}"
+            button.icon = ft.Icons.STOP_ROUNDED if run else ft.Icons.PLAY_ARROW_ROUNDED
+        self.super_oni_refresh.disabled = busy
+
+    def _toggle_super_oni_slot(self, slot):
+        with self._super_oni_lock:
+            run = self._super_oni_runs.get(slot)
+            if run is not None:
+                run["stop_event"].set()
+                self._sync_super_oni_controls()
+                self._safe_update()
+            else:
+                self._start_super_oni_slots((slot,))
+
+    def _start_super_oni_slots(self, slots=None):
+        with self._super_oni_lock:
+            if self.active_tool != "super_oni" or self.running:
+                self.append_tool_log("ERROR", "一键长草正在运行，不能同时启动小工具")
+                return
+            if self.tool_running and self.tool_stop_event.is_set():
+                return
+            try:
+                targets = self._selected_super_oni_targets(slots)
+                active_ports = {run["target"]["adb_port"] for run in self._super_oni_runs.values()}
+                targets = [target for target in targets if target["adb_port"] not in active_ports]
+                if not targets:
+                    return
+                primary = getattr(self, "mumu_instance", None)
+                if primary is not None and str(primary.value) not in {str(item["index"]) for item in self.mumu_instances}:
+                    primary.value = targets[0]["index"]
+                if not self.save_settings():
+                    self.tool_status.value = "设置保存失败，请检查设置页的 MuMu 配置"
+                    self.tool_status.color = COLORS["error"]
+                    self._safe_update()
+                    return
+            except ValueError as exc:
+                self.tool_status.value = str(exc)
+                self.tool_status.color = COLORS["warning"]
+                self._safe_update()
+                return
+            if not self.tool_running:
+                self._super_oni_run_results.clear()
+                self.tool_stop_event.clear()
+                self._begin_tool_run()
+            jobs = []
+            for target in targets:
+                slot = 0 if str(target["index"]) == self.super_oni_primary.value else 1
+                stop_event = threading.Event()
+                self._super_oni_runs[slot] = {"target": target, "stop_event": stop_event}
+                self._super_oni_run_results.pop(slot, None)
+                self._reset_super_oni_results("运行中", slots=(slot,))
+                jobs.append((slot, target, stop_event))
+            self.tool_status.value = f"超鬼王刷票：{len(self._super_oni_runs)} 个模拟器运行中"
+            self.tool_status.color = COLORS["active"]
+            self._sync_super_oni_controls()
+            self._safe_update()
+            for slot, target, stop_event in jobs:
+                try:
+                    self.page.run_thread(self._super_oni_worker, slot, target, stop_event, dict(self.settings))
+                except Exception as exc:
+                    self._apply_super_oni_result({"slot": slot, "run_token": stop_event,
+                        "instance_index": str(target["index"]), "success": False, "stopped": False, "reason": str(exc)})
+                    self._apply_super_oni_finished(slot, stop_event,
+                        {"success": False, "stopped": False, "reason": str(exc)})
+                    self._safe_update()
+
+    def _super_oni_worker(self, slot, target, stop_event, settings):
+        from ui_app.tool_sessions import run_super_oni_targets
+
+        def emit(kind, payload):
+            if kind != "tool_log":
+                payload = dict(payload, slot=slot, run_token=stop_event)
+            self.ui_queue.put((kind, payload))
+
+        try:
+            result = run_super_oni_targets(settings, [target], stop_event, self._load_tool_module, emit)
+        except Exception as exc:
+            result = {"success": False, "stopped": stop_event.is_set(), "reason": str(exc)}
+            emit("super_oni_result", dict(result, instance_index=str(target["index"])))
+        self.ui_queue.put(("super_oni_finished", {"slot": slot, "run_token": stop_event, "result": result}))
+
+    def _apply_super_oni_finished(self, slot, run_token, result):
+        with self._super_oni_lock:
+            if self._super_oni_runs.get(slot, {}).get("stop_event") is not run_token:
+                return
+            del self._super_oni_runs[slot]
+            self._super_oni_run_results[slot] = result
+            if self._super_oni_runs:
+                self.tool_status.value = f"超鬼王刷票：{len(self._super_oni_runs)} 个模拟器运行中"
+                self._sync_super_oni_controls()
+                return
+            results = list(self._super_oni_run_results.values())
+            failures = [item.get("reason") or "执行失败" for item in results if not item["success"]]
+            self._apply_tool_finished(success=not failures, stopped=any(item["stopped"] for item in results),
+                                      tool_name="super_oni", reason="；".join(failures) or None)
+
+    def _super_oni_event_is_current(self, payload):
+        return ("run_token" not in payload or
+                self._super_oni_runs.get(payload["slot"], {}).get("stop_event") is payload["run_token"])
+
     def _set_super_oni_controls_disabled(self, disabled):
-        for name in ("super_oni_primary", "super_oni_secondary", "super_oni_refresh"):
+        for name in ("super_oni_primary", "super_oni_secondary", "super_oni_refresh",
+                     "super_oni_primary_bonus", "super_oni_secondary_bonus",
+                     "super_oni_primary_start", "super_oni_secondary_start"):
             control = getattr(self, name, None)
             if control is not None:
                 control.disabled = disabled
 
     def _apply_super_oni_progress(self, progress):
-        if self.active_tool != "super_oni":
+        if self.active_tool != "super_oni" or not self._super_oni_event_is_current(progress):
             return
         tickets = progress.get("tickets")
         count = "未识别" if tickets is None else str(tickets)
@@ -135,6 +280,8 @@ class ToolsPageMixin:
                                          f"阶段：{progress.get('stage', '等待启动')}")
 
     def _apply_super_oni_result(self, result):
+        if not self._super_oni_event_is_current(result):
+            return
         stage = ("已安全停止" if result["stopped"] else "已刷满，已关闭加成并返回觉醒一层"
                  if result["success"] else "失败：" + str(result.get("reason") or "执行失败"))
         self._apply_super_oni_progress(dict(result, stage=stage))
@@ -233,7 +380,7 @@ class ToolsPageMixin:
         self.market_refresh_count_control.visible = tool_name == "market_sniper"
         self.super_oni_options_control.visible = tool_name == "super_oni"
         self.baigui_options_control.visible = tool_name == "baigui"
-        self.tool_start_button.content = "开始"
+        self.tool_start_button.content = "全部启动" if tool_name == "super_oni" else "开始"
         self.tool_start_button.disabled = False
         if tool_name == "super_oni":
             self.tool_status.value = "请停留在觉醒一层界面，游戏将自动上阵"
@@ -323,22 +470,14 @@ class ToolsPageMixin:
 
 
     def start_selected_tool(self, _event: Any = None) -> None:
+        if self.active_tool == "super_oni":
+            self._start_super_oni_slots()
+            return
         if self.tool_running:
             return
         if self.running:
             self.append_tool_log("ERROR", "一键长草正在运行，不能同时启动小工具")
             return
-        if self.active_tool == "super_oni":
-            try:
-                self._super_oni_targets = self._selected_super_oni_targets()
-            except ValueError as exc:
-                self.tool_status.value = str(exc)
-                self.tool_status.color = COLORS["warning"]
-                self._safe_update()
-                return
-            primary = getattr(self, "mumu_instance", None)
-            if primary is not None and str(primary.value) not in {str(item["index"]) for item in self.mumu_instances}:
-                primary.value = self._super_oni_targets[0]["index"]
         if self.active_tool == "baigui":
             from tasks.Baigui.baigui import availability
             status = availability()
@@ -376,12 +515,16 @@ class ToolsPageMixin:
             return
 
         self.tool_stop_event.clear()
-        if self.active_tool == "super_oni":
-            self._reset_super_oni_results("运行中")
         if self.active_tool == 'baigui':
             self._apply_baigui_progress({'stage': '启动检查', 'completed_matches': 0})
+        self._begin_tool_run()
+        self._safe_update()
+        self.page.run_thread(self._tool_worker, self.active_tool)
+
+    def _begin_tool_run(self):
         self.tool_running = True
-        self.tool_start_button.content = "停止"
+        self.tool_start_button.content = "全部停止" if self.active_tool == "super_oni" else "停止"
+        self.tool_start_button.disabled = False
         self.tool_start_button.icon = ft.Icons.STOP_ROUNDED
         self.tool_start_button.bgcolor = COLORS["error_bg"]
         self.tool_start_button.color = COLORS["error"]
@@ -400,14 +543,17 @@ class ToolsPageMixin:
             "INFO",
             f"准备启动{TOOL_LABELS[self.active_tool]}",
         )
-        self._safe_update()
-        self.page.run_thread(self._tool_worker, self.active_tool)
 
 
     def stop_selected_tool(self, _event: Any = None) -> None:
         if not self.tool_running:
             return
         self.tool_stop_event.set()
+        if self.active_tool == "super_oni":
+            with self._super_oni_lock:
+                for run in self._super_oni_runs.values():
+                    run["stop_event"].set()
+                self._sync_super_oni_controls()
         self.tool_start_button.disabled = True
         self.tool_start_button.content = "停止中"
         self.tool_status.value = "正在等待当前截图步骤结束"
@@ -424,20 +570,6 @@ class ToolsPageMixin:
 
 
     def _tool_worker(self, tool_name: str) -> None:
-        if tool_name == "super_oni":
-            from ui_app.tool_sessions import run_super_oni_targets
-
-            try:
-                result = run_super_oni_targets(
-                    dict(self.settings), self._super_oni_targets, self.tool_stop_event,
-                    self._load_tool_module, lambda kind, payload: self.ui_queue.put((kind, payload)),
-                )
-            except Exception as exc:
-                result = {"success": False, "stopped": self.tool_stop_event.is_set(),
-                          "tool_name": tool_name, "reason": str(exc)}
-                self.append_tool_log("ERROR", f"超鬼王刷票启动失败：{exc}")
-            self.ui_queue.put(("tool_finished", result))
-            return
         from module.task_execution import ExecutionReport, run_task_call
 
         writer = LineWriter(lambda line: self.append_tool_log("INFO", line))
@@ -576,7 +708,7 @@ class ToolsPageMixin:
     ) -> None:
         self.tool_running = False
         self.tool_start_button.disabled = False
-        self.tool_start_button.content = "开始"
+        self.tool_start_button.content = "全部启动" if tool_name == "super_oni" else "开始"
         self.tool_start_button.icon = ft.Icons.PLAY_ARROW_ROUNDED
         self.tool_start_button.bgcolor = COLORS["active"]
         self.tool_start_button.color = "#07111F"
@@ -586,6 +718,8 @@ class ToolsPageMixin:
         self.market_refresh_count_field.disabled = False
         self._set_baigui_controls_disabled(False)
         self._set_super_oni_controls_disabled(False)
+        if tool_name == "super_oni":
+            self._sync_super_oni_controls()
         self._set_global_settings_disabled(False)
         self.running_badge.visible = False
         label = TOOL_LABELS.get(tool_name, tool_name)

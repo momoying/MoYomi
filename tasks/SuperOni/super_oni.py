@@ -24,6 +24,7 @@ SCREENSHOT_INTERVAL = .5
 BATTLE_SCREENSHOT_INTERVAL = 2.0
 BATTLE_TIMEOUT = 300.0
 PAGE_TIMEOUT = 30.0
+CHALLENGE_RETRY_INTERVAL = .5
 OCR_RETRY_LIMIT = 10
 OCR_RETRY_INTERVAL = 2.0
 TARGET_TICKETS = 50
@@ -178,11 +179,11 @@ def _set_bonus(frame, enabled, stop_event, progress):
     return None
 
 
-def _prepare(frame, stop_event, progress):
+def _prepare(frame, stop_event, progress, enable_bonus=True):
     # 从已经打开的加成面板启动时，先确认加成并退出，避免点击面板后面的锁。
     panel_open = _matches(frame, ASSETS.I_AWAKENING_BONUS) is not None
     if panel_open:
-        frame = _set_bonus(frame, True, stop_event, progress)
+        frame = _set_bonus(frame, enable_bonus, stop_event, progress)
         if frame is None:
             return None
     progress("检查阵容上锁")
@@ -190,11 +191,11 @@ def _prepare(frame, stop_event, progress):
     if frame is None:
         return None
     progress("阵容已上锁")
-    return frame if panel_open else _set_bonus(frame, True, stop_event, progress)
+    return frame if panel_open else _set_bonus(frame, enable_bonus, stop_event, progress)
 
 
 def _advance(frame, marker, click_count, areas, stop_event):
-    """快速连点，每次点击后检查页面；宝箱出现即停，先 OCR 再关闭。"""
+    """保留快点节奏；仍未切页时等 0.5 秒重新截图，供重试或失败判断。"""
     utils.config["screenshot_speed"] = 0
     for _ in range(random.randint(*click_count)):
         if frame is None or _matches(frame, marker) is None:
@@ -207,11 +208,18 @@ def _advance(frame, marker, click_count, areas, stop_event):
             raise OSError("结算页面点击失败")
         _wait(random.uniform(.1, .2), stop_event)
         frame = DEVICE.screenshot()
+    if frame is None or _matches(frame, marker) is not None:
+        # 快截图可能仍处于关闭动画中，三轮中的最后一轮也必须延迟确认。
+        utils.config["screenshot_speed"] = SCREENSHOT_INTERVAL
+        _wait(SCREENSHOT_INTERVAL, stop_event)
+        frame = DEVICE.screenshot()
     return frame
 
 
-def run(stop_event=None, progress_callback=None):
+def run(stop_event=None, progress_callback=None, enable_bonus=True):
     """从觉醒一层、胜利页或奖励页启动；刷满后确认返回觉醒一层。"""
+    if type(enable_bonus) is not bool:
+        raise ValueError("觉醒加成开关必须为布尔值")
     if stop_event is not None and stop_event.is_set():
         return True
     current_tickets = None
@@ -239,6 +247,7 @@ def run(stop_event=None, progress_callback=None):
     deadline = time.monotonic() + PAGE_TIMEOUT
     candidate = None
     candidate_hits = ocr_retries = victory_batches = dismiss_batches = 0
+    challenge_clicks = 0
     pending_frame = None
     prepared = False
     previous_interval = utils.config.get("screenshot_speed", .5)
@@ -246,7 +255,8 @@ def run(stop_event=None, progress_callback=None):
     try:
         while stop_event is None or not stop_event.is_set():
             if time.monotonic() >= deadline:
-                return fail({"entry": "请停留在觉醒一层界面后启动", "battle": "战斗超时，或未能进入战斗",
+                return fail({"entry": "请停留在觉醒一层界面后启动", "challenge": "挑战点击后无法确认是否进入战斗",
+                             "battle": "战斗超时，或未能进入战斗",
                              "reward": "未能确认奖励页票数", "return": "未能返回觉醒一层"}[phase])
             utils.config["screenshot_speed"] = BATTLE_SCREENSHOT_INTERVAL if phase == "battle" else SCREENSHOT_INTERVAL
             frame = pending_frame if pending_frame is not None else DEVICE.screenshot()
@@ -306,11 +316,16 @@ def run(stop_event=None, progress_callback=None):
                 continue
 
             challenge = _awakening_challenge(frame)
+            if phase == "challenge" and challenge is None:
+                phase = "battle"
+                deadline = time.monotonic() + BATTLE_TIMEOUT
+                progress("战斗中")
             if (phase == "entry" and not prepared
                     and (challenge is not None or _matches(frame, ASSETS.I_AWAKENING_BONUS) is not None)):
-                pending_frame = _prepare(frame, stop_event, progress)
+                pending_frame = (_prepare(frame, stop_event, progress) if enable_bonus else
+                                 _prepare(frame, stop_event, progress, enable_bonus=False))
                 if pending_frame is None:
-                    return fail("无法确认阵容上锁或觉醒加成开启，未开始挑战")
+                    return fail("无法确认阵容上锁或觉醒加成设置，未开始挑战")
                 prepared = True
                 deadline = time.monotonic() + PAGE_TIMEOUT
                 continue
@@ -318,7 +333,7 @@ def run(stop_event=None, progress_callback=None):
                 continue
             if phase == "return":
                 if current_tickets == TARGET_TICKETS:
-                    if _set_bonus(frame, False, stop_event, progress) is None:
+                    if enable_bonus and _set_bonus(frame, False, stop_event, progress) is None:
                         return fail("已刷满 50/50，但未能确认觉醒加成关闭并返回觉醒一层")
                     progress("已刷满，已关闭觉醒加成，已返回觉醒一层")
                     LOGGER.info("完成", "超鬼王票数 50/50，已关闭觉醒加成并返回觉醒一层")
@@ -331,18 +346,24 @@ def run(stop_event=None, progress_callback=None):
             if phase == "reward":
                 return fail("奖励页票数尚未确认，已停止继续挑战", frame)
             if phase == "battle":
-                continue  # 挑战点击后等待实际切页，不能在同一按钮上重复消耗体力。
-            progress("发起觉醒一层挑战")
+                continue
+            if phase == "challenge" and challenge_clicks >= 3:
+                return fail("挑战按钮点击三轮后仍停留在觉醒一层，已停止", frame)
+            if phase == "entry":
+                challenge_clicks = 0
+                attempts += 1
+                candidate = None
+                candidate_hits = ocr_retries = victory_batches = dismiss_batches = 0
+                deadline = time.monotonic() + PAGE_TIMEOUT
+            progress("发起觉醒一层挑战" if challenge_clicks == 0 else f"重试挑战（第 {challenge_clicks + 1}/3 轮）")
             if stop_event is not None and stop_event.is_set():
                 break
             if DEVICE.click(*DEVICE.random_point(challenge)) is False:
                 return fail("挑战按钮点击失败", frame)
-            attempts += 1
-            candidate = None
-            candidate_hits = ocr_retries = victory_batches = dismiss_batches = 0
-            phase = "battle"
-            deadline = time.monotonic() + BATTLE_TIMEOUT
-            progress("战斗中")
+            challenge_clicks += 1
+            phase = "challenge"
+            # 等待切页后重新截图；仅仍能确认觉醒一层时补点，最多三轮。
+            _wait(CHALLENGE_RETRY_INTERVAL, stop_event)
         return True
     finally:
         utils.config["screenshot_speed"] = previous_interval

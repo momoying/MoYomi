@@ -53,7 +53,7 @@ class DeviceSessionTests(TestCase):
 
 
 class ParallelToolTests(TestCase):
-    def run_pair(self, *, fail_first=False, cancel=False):
+    def run_pair(self, *, fail_first=False, cancel=False, bonus=None):
         events = queue.Queue()
         stop = threading.Event()
         barrier = threading.Barrier(2)
@@ -72,9 +72,10 @@ class ParallelToolTests(TestCase):
         def load_tool(_name):
             task = SimpleNamespace()
 
-            def run(*, stop_event, progress_callback):
+            def run(*, stop_event, progress_callback, enable_bonus=True):
                 self.assertIs(stop_event, stop)
                 index = task.utils.config['mumu_index']
+                self.assertIs(enable_bonus, bonus[int(index)] if bonus is not None else True)
                 self.assertEqual(task.DEVICE.backend.adb_port, TARGETS[int(index)]['adb_port'])
                 record_frame(frames[index])
                 barrier.wait(timeout=3)  # 确认两个线程都已进入任务后才继续。
@@ -93,7 +94,8 @@ class ParallelToolTests(TestCase):
 
         with patch('ui_app.tool_sessions.automation.create_session', side_effect=factory), \
              patch('ui_app.tool_sessions.ErrorScreenshotManager') as screenshots:
-            summary = run_super_oni_targets(dict(DEFAULT_SETTINGS), TARGETS, stop, load_tool,
+            targets = [dict(target, enable_bonus=bonus[i]) for i, target in enumerate(TARGETS)] if bonus is not None else TARGETS
+            summary = run_super_oni_targets(dict(DEFAULT_SETTINGS), targets, stop, load_tool,
                                             lambda kind, payload: events.put((kind, payload)))
         items = []
         while not events.empty():
@@ -112,6 +114,11 @@ class ParallelToolTests(TestCase):
         self.assertTrue(all(item['success'] for item in results))
         self.assertTrue(all(session.reset_screenshot_backend.call_count >= 1 for session in sessions))
         screenshots.assert_not_called()
+
+    def test_threads_receive_independent_bonus_choices(self):
+        for choices in ([False, True], [True, False]):
+            summary, *_ = self.run_pair(bonus=choices)
+            self.assertTrue(summary['success'])
 
     def test_one_failure_does_not_cancel_the_other_and_screenshot_uses_failed_device_frame(self):
         summary, events, sessions, screenshots, frames = self.run_pair(fail_first=True)
@@ -149,9 +156,191 @@ class ParallelToolUiTests(TestCase):
         ui.mumu_instances = list(TARGETS)
         ui.active_tool = 'super_oni'
         ui.tool_running = ui.running = False
+        ui.tool_stop_event = threading.Event()
+        ui.ui_queue = queue.Queue()
+        ui.page = SimpleNamespace(run_thread=Mock())
+        ui.save_settings = Mock(return_value=True)
+        ui.append_tool_log = ui._append_tool_log_now = ui._set_global_settings_disabled = Mock()
+        for name in ("tool_status", "tool_start_button", "start_button", "refresh_button",
+                     "secret_attempts_field", "market_refresh_count_field", "running_badge", "running_badge_text"):
+            setattr(ui, name, SimpleNamespace(disabled=False))
         ui._safe_update = Mock()
         ui._build_super_oni_controls()
         return ui
+
+    def drain(self, ui):
+        while not ui.ui_queue.empty():
+            kind, payload = ui.ui_queue.get_nowait()
+            if kind == 'super_oni_progress':
+                ui._apply_super_oni_progress(payload)
+            elif kind == 'super_oni_result':
+                ui._apply_super_oni_result(payload)
+            elif kind == 'super_oni_finished':
+                ui._apply_super_oni_finished(**payload)
+
+    def test_buttons_start_slots_separately_and_preserve_running_results(self):
+        ui = self.dashboard()
+        ui.super_oni_primary_start.on_click(None)
+        self.assertEqual(set(ui._super_oni_runs), {0})
+        self.assertTrue(ui.super_oni_primary.disabled)
+        self.assertFalse(ui.super_oni_secondary.disabled)
+        ui._apply_super_oni_progress({'instance_index': '0', 'tickets': 12})
+        first_progress = ui.super_oni_progress.value
+        ui.super_oni_secondary.value = '1'
+        ui._on_super_oni_instance_changed()
+        self.assertEqual(ui.super_oni_progress.value, first_progress)
+        self.assertFalse(ui.super_oni_secondary_start.disabled)
+        ui.super_oni_secondary_bonus.value = False
+        ui.super_oni_secondary_start.on_click(None)
+        self.assertEqual(set(ui._super_oni_runs), {0, 1})
+        self.assertEqual(ui.super_oni_progress.value, first_progress)
+        self.assertEqual(ui.page.run_thread.call_count, 2)
+        jobs = [call.args for call in ui.page.run_thread.call_args_list]
+        self.assertEqual([job[1] for job in jobs], [0, 1])
+        self.assertEqual([job[2]['enable_bonus'] for job in jobs], [True, False])
+        self.assertIsNot(jobs[0][3], jobs[1][3])
+        ui._start_super_oni_slots((0,))
+        self.assertEqual(ui.page.run_thread.call_count, 2)
+
+    def test_second_slot_can_start_first_with_its_own_bonus_choice(self):
+        ui = self.dashboard()
+        ui.super_oni_primary_bonus.value = True
+        ui.super_oni_secondary.value = '1'
+        ui.super_oni_secondary_bonus.value = False
+        ui._on_super_oni_instance_changed()
+        ui.super_oni_secondary_start.on_click(None)
+        self.assertEqual(set(ui._super_oni_runs), {1})
+        self.assertFalse(ui.super_oni_primary_start.disabled)
+        self.assertFalse(ui.super_oni_primary.disabled)
+        self.assertFalse(ui._super_oni_runs[1]['target']['enable_bonus'])
+        self.assertIn('等待启动', ui.super_oni_progress.value)
+
+    def test_individual_stop_restart_and_old_events_do_not_affect_other_slot(self):
+        ui = self.dashboard()
+        ui.super_oni_secondary.value = '1'
+        ui.start_selected_tool()
+        first, second = (ui._super_oni_runs[slot]['stop_event'] for slot in (0, 1))
+        ui.super_oni_primary_start.on_click(None)
+        self.assertTrue(first.is_set())
+        self.assertFalse(second.is_set())
+        self.assertFalse(ui.tool_stop_event.is_set())
+        ui._apply_super_oni_finished(0, first, {'success': True, 'stopped': True})
+        self.assertTrue(ui.tool_running)
+        self.assertTrue(ui.start_button.disabled)
+        self.assertFalse(ui.super_oni_primary_start.disabled)
+        ui.super_oni_primary_start.on_click(None)
+        new_run = ui._super_oni_runs[0]['stop_event']
+        self.assertIsNot(new_run, first)
+        ui._apply_super_oni_progress({'slot': 0, 'run_token': first, 'instance_index': '0', 'tickets': 49})
+        self.assertNotIn('49 / 50', ui.super_oni_progress.value)
+        ui._apply_super_oni_finished(0, first, {'success': False, 'stopped': False})
+        self.assertIs(ui._super_oni_runs[0]['stop_event'], new_run)
+        self.assertFalse(second.is_set())
+
+    def test_all_start_and_all_stop_wait_for_both_before_unlocking(self):
+        ui = self.dashboard()
+        ui.super_oni_secondary.value = '1'
+        ui.start_selected_tool()
+        self.assertEqual(ui.page.run_thread.call_count, 2)
+        events = [ui._super_oni_runs[slot]['stop_event'] for slot in (0, 1)]
+        ui.stop_selected_tool()
+        self.assertTrue(all(event.is_set() for event in events))
+        self.assertTrue(ui.super_oni_primary_start.disabled)
+        self.assertTrue(ui.super_oni_secondary_start.disabled)
+        ui._apply_super_oni_finished(1, events[1], {'success': True, 'stopped': True})
+        self.assertTrue(ui.tool_running)
+        ui._apply_super_oni_finished(0, events[0], {'success': True, 'stopped': True})
+        self.assertFalse(ui.tool_running)
+        self.assertFalse(ui.start_button.disabled)
+        self.assertFalse(ui.super_oni_primary_start.disabled)
+        self.assertFalse(ui.super_oni_secondary_start.disabled)
+        self.assertEqual(ui.tool_start_button.content, '全部启动')
+        ui.start_selected_tool()
+        self.assertEqual(ui.page.run_thread.call_count, 4)
+        self.assertFalse(ui.tool_stop_event.is_set())
+
+    def test_simultaneous_start_requests_only_launch_one_worker_for_same_device(self):
+        ui = self.dashboard()
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            list(pool.map(lambda _: ui._start_super_oni_slots((0,)), range(2)))
+        ui.page.run_thread.assert_called_once()
+
+    def test_worker_dispatch_failure_releases_slot_and_reports_error(self):
+        ui = self.dashboard()
+        ui.page.run_thread.side_effect = OSError('线程启动失败')
+        ui._start_super_oni_slots((0,))
+        self.assertFalse(ui.tool_running)
+        self.assertEqual(ui._super_oni_runs, {})
+        self.assertIn('线程启动失败', ui.super_oni_progress.value)
+        self.assertFalse(ui.super_oni_primary_start.disabled)
+
+    def test_real_workers_can_start_later_and_stop_independently(self):
+        ui = self.dashboard()
+        started = [threading.Event(), threading.Event()]
+        finish_second = threading.Event()
+        sessions = []
+        real_factory = automation.create_session
+
+        def factory():
+            backend = real_factory()
+            backend.configure_runtime_paths = Mock()
+            backend.connect_to_mumu = Mock(return_value=True)
+            backend.reset_screenshot_backend = Mock()
+            sessions.append(backend)
+            return backend
+
+        def load(_name):
+            task = SimpleNamespace()
+            def run(*, stop_event, progress_callback, enable_bonus):
+                slot = int(task.utils.config['mumu_index'])
+                self.assertIs(enable_bonus, slot == 0)
+                progress_callback({'tickets': slot + 1, 'attempts': 1, 'stage': '战斗中'})
+                started[slot].set()
+                if slot == 0:
+                    self.assertTrue(stop_event.wait(5))
+                else:
+                    self.assertTrue(finish_second.wait(5))
+                    self.assertFalse(stop_event.is_set())
+                    progress_callback({'tickets': 50, 'attempts': 2, 'stage': '完成'})
+                return True
+            task.run = run
+            return task
+
+        ui._load_tool_module = load
+        futures = []
+        with patch('ui_app.tool_sessions.automation.create_session', side_effect=factory), \
+             ThreadPoolExecutor(max_workers=2) as pool:
+            def dispatch(worker, *args):
+                future = pool.submit(worker, *args)
+                futures.append(future)
+                return future
+            ui.page.run_thread = dispatch
+            try:
+                ui.super_oni_primary_start.on_click(None)
+                self.assertTrue(started[0].wait(5))
+                ui.super_oni_secondary.value = '1'
+                ui.super_oni_secondary_bonus.value = False
+                ui._on_super_oni_instance_changed()
+                ui.super_oni_secondary_start.on_click(None)
+                self.assertTrue(started[1].wait(5))
+                ui.super_oni_primary_start.on_click(None)
+                futures[0].result(timeout=5)
+                self.drain(ui)
+                self.assertTrue(ui.tool_running)
+                self.assertIn('已安全停止', ui.super_oni_progress.value)
+                self.assertIn('2 / 50', ui.super_oni_secondary_progress.value)
+                finish_second.set()
+                futures[1].result(timeout=5)
+                self.drain(ui)
+                self.assertFalse(ui.tool_running)
+                self.assertIn('50 / 50', ui.super_oni_secondary_progress.value)
+                self.assertIn('已刷满', ui.super_oni_secondary_progress.value)
+                self.assertEqual({session.adb_port for session in sessions}, {t['adb_port'] for t in TARGETS})
+                self.assertTrue(all(session.reset_screenshot_backend.called for session in sessions))
+            finally:
+                for run in ui._super_oni_runs.values():
+                    run['stop_event'].set()
+                finish_second.set()
 
     def test_optional_second_instance_duplicate_validation_and_independent_results(self):
         ui = self.dashboard()

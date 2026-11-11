@@ -176,7 +176,7 @@ def combined_task_is_enabled(
     """卡片层面的启用状态：同区任务或固定跨区任务任一启用即可。"""
     return task_is_enabled(system_state, task_name) or (
         cross_region_is_enabled(system_state)
-        and task_name in CROSS_REGION_TASKS
+        and cross_region_task_is_enabled(system_state, task_name)
     )
 
 
@@ -191,12 +191,12 @@ def combined_task_runs_due(
         if task_is_enabled(system_state, task_name)
         else 0
     )
-    if cross_region_is_enabled(system_state) and task_name in CROSS_REGION_TASKS:
+    if cross_region_is_enabled(system_state) and cross_region_task_is_enabled(system_state, task_name):
         runs += task_runs_due(
             task_name,
-            system_state,
+            cross_region_task_state(system_state, task_name),
             now,
-            region=CROSS_REGION,
+            region=CROSS_REGION if task_name in CROSS_REGION_TASKS else SAME_REGION,
         )
     return runs
 
@@ -208,7 +208,7 @@ def combined_bounty_detail(system_state: dict[str, Any]) -> str:
         if task_is_enabled(system_state, BOUNTY_TASK)
         else None
     )
-    if not cross_region_is_enabled(system_state):
+    if not cross_region_is_enabled(system_state) or not cross_region_task_is_enabled(system_state, BOUNTY_TASK):
         return BOUNTY_RESULT_DETAILS.get(same_result, "当前周期已检查")
 
     cross_result = task_record_result(system_state, BOUNTY_TASK, CROSS_REGION)
@@ -240,7 +240,7 @@ def combined_bounty_highlight_result(
         if task_is_enabled(system_state, BOUNTY_TASK)
         else None
     ]
-    if cross_region_is_enabled(system_state):
+    if cross_region_is_enabled(system_state) and cross_region_task_is_enabled(system_state, BOUNTY_TASK):
         results.append(
             task_record_result(system_state, BOUNTY_TASK, CROSS_REGION)
         )
@@ -270,6 +270,8 @@ def task_is_due(
     region: str = SAME_REGION,
 ) -> bool:
     """判断同一账号、同一系统的任务在当前时刻是否需要执行。"""
+    if region == CROSS_REGION and task_name not in CROSS_REGION_TASKS:
+        return task_is_due(task_name, cross_region_task_state(system_state, task_name), now)
     if now.tzinfo is None:
         now = now.astimezone()
 
@@ -377,6 +379,8 @@ def task_runs_due(
     region: str = SAME_REGION,
 ) -> int:
     """返回任务在当前刷新周期需要执行的次数。"""
+    if region == CROSS_REGION and task_name not in CROSS_REGION_TASKS:
+        return task_runs_due(task_name, cross_region_task_state(system_state, task_name), now)
     if task_name == "experience_monster_completed":
         return experience_runs_due(system_state, now)
     return 1 if task_is_due(task_name, system_state, now, region=region) else 0
@@ -385,11 +389,16 @@ def task_runs_due(
 def mark_remaining_merchant_tasks_skipped(
     state: dict[str, Any],
     completed_at: datetime,
+    region: str = SAME_REGION,
 ) -> int:
     """发现 50 蓝票后，将本周期仍到期的奸商任务统一标记为跳过。"""
     skipped_count = 0
     for account_state in state["accounts"].values():
         for system_state in account_state["systems"].values():
+            if region == CROSS_REGION:
+                if not cross_region_is_enabled(system_state) or not cross_region_task_is_enabled(system_state, MERCHANT_TASK):
+                    continue
+                system_state = cross_region_task_state(system_state, MERCHANT_TASK)
             if not task_is_enabled(system_state, MERCHANT_TASK):
                 continue
             if not task_is_due(MERCHANT_TASK, system_state, completed_at):
@@ -574,6 +583,16 @@ def build_work_queue(
     queue: list[WorkItem] = []
     deferred_member_reserves: list[WorkItem] = []
     coop_allocations = _coop_reward_run_allocations(state, now)
+    cross_accounts = {}
+    for name, account in state["accounts"].items():
+        systems = {}
+        for system, role in account["systems"].items():
+            if cross_region_is_enabled(role):
+                target = dict(cross_region_task_state(role, COOP_REWARD_TASK))
+                target["task_enabled"] = {task: cross_region_task_is_enabled(role, task) for task in TASK_ORDER}
+                systems[system] = target
+        cross_accounts[name] = {"systems": systems}
+    cross_coop_allocations = _coop_reward_run_allocations({"accounts": cross_accounts}, now)
     account_names = list(state["accounts"])
     shuffle_accounts(account_names)
     for account_name in account_names:
@@ -612,19 +631,24 @@ def build_work_queue(
                     queue.append(WorkItem(account_name, system, tasks))
 
             if cross_region_is_enabled(system_state):
-                cross_tasks = [
-                    TaskWork(task_name, 1)
-                    for task_name in CROSS_REGION_TASKS
-                    if task_is_due(
-                        task_name,
-                        system_state,
-                        now,
-                        region=CROSS_REGION,
-                    )
-                ]
+                cross_tasks = []
+                cross_battles = []
+                for task_name in TASK_ORDER:
+                    if not cross_region_task_is_enabled(system_state, task_name):
+                        continue
+                    target = cross_region_task_state(system_state, task_name)
+                    target_region = CROSS_REGION if task_name in CROSS_REGION_TASKS else SAME_REGION
+                    count = task_runs_due(task_name, target, now, region=target_region)
+                    if count and task_name == COOP_REWARD_TASK:
+                        completed, saved_target = battle_progress(target, task_name, now)
+                        count = max(0, (saved_target or cross_coop_allocations.get((account_name, system), 0)) - completed)
+                    if count:
+                        (cross_battles if task_name in BATTLE_TASK_ORDER else cross_tasks).append(TaskWork(task_name, count))
                 shuffle_tasks(cross_tasks)
+                shuffle_tasks(cross_battles)
+                cross_tasks.extend(cross_battles)
                 if cross_tasks:
-                    queue.append(
+                    item = (
                         WorkItem(
                             account_name,
                             system,
@@ -632,6 +656,16 @@ def build_work_queue(
                             region=CROSS_REGION,
                         )
                     )
+                    cross_heart = cross_region_task_state(system_state, HEART_TEAM_TASK)
+                    if heart_team_role(cross_heart) == 'member':
+                        regular = tuple(task for task in item.tasks if task.task_name != HEART_TEAM_TASK)
+                        reserve = tuple(task for task in item.tasks if task.task_name == HEART_TEAM_TASK)
+                        if regular:
+                            queue.append(WorkItem(account_name, system, regular, CROSS_REGION))
+                        if reserve:
+                            deferred_member_reserves.append(WorkItem(account_name, system, reserve, CROSS_REGION))
+                    else:
+                        queue.append(item)
 
     # 不改变上方账号/系统的随机遍历顺序。成员在原位置先执行其他任务，
     # 同心队预存统一追加为收尾队列，确保发生在当天队长战斗之后。

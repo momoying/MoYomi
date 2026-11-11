@@ -85,7 +85,7 @@ class SuperOniVisionTests(TestCase):
 
 
 class SuperOniFlowTests(TestCase):
-    def replay(self, frames, counts, *, event=None, setup=None, manage_bonus=False):
+    def replay(self, frames, counts, *, event=None, setup=None, manage_bonus=False, enable_bonus=True):
         with ExitStack() as stack:
             engine = Mock()
             engine.ocr.side_effect = [ocr_result(value) for value in counts]
@@ -103,7 +103,7 @@ class SuperOniFlowTests(TestCase):
                 setup(stack, click)
             updates = []
             interval = task.utils.config["screenshot_speed"]
-            result, report = run_task_call(lambda: task.run(stop_event=event, progress_callback=updates.append), stop_event=event)
+            result, report = run_task_call(lambda: task.run(stop_event=event, progress_callback=updates.append, enable_bonus=enable_bonus), stop_event=event)
             self.assertIsNone(report.exception)
             self.assertEqual(task.utils.config["screenshot_speed"], interval)
             return SimpleNamespace(result=result, report=report, updates=updates, click=click,
@@ -120,7 +120,9 @@ class SuperOniFlowTests(TestCase):
         self.assertEqual(out.click.call_count, 12)
         self.assertEqual(out.engine.ocr.call_count, 4)
         self.assertTrue(any(update['tickets'] == 49 for update in out.updates))
-        self.assertTrue(all(.1 <= call.args[0] <= .2 for call in out.wait.call_args_list))
+        delays = [call.args[0] for call in out.wait.call_args_list]
+        self.assertEqual(delays.count(task.CHALLENGE_RETRY_INTERVAL), 2)
+        self.assertTrue(all(.1 <= delay <= .2 or delay == task.CHALLENGE_RETRY_INTERVAL for delay in delays))
         for index, call in enumerate(out.click.call_args_list):
             x, y = call.args
             if index % 6 == 0:
@@ -129,6 +131,99 @@ class SuperOniFlowTests(TestCase):
                 self.assertTrue(360 <= x <= 930 and 585 <= y <= 665)
             else:
                 self.assertTrue((90 <= x <= 330 or 970 <= x <= 1210) and 550 <= y <= 620)
+
+    def test_challenge_retries_until_page_changes_and_resets_for_next_battle(self):
+        a, v, r = (screenshot(name) for name in ("awakening", "victory", "reward"))
+        for rounds in (2, 3):
+            with self.subTest(rounds=rounds):
+                out = self.replay([a] * rounds + [v, r, r] + [a] * rounds + [v, r, r, a],
+                                  ["49/50", "49/50", "50/50", "50/50"])
+                self.assertTrue(out.result)
+                self.assertEqual(out.updates[-1]["attempts"], 2)
+                self.assertEqual(out.click.call_count, (rounds + 2) * 2)
+                for start in (0, rounds + 2):
+                    for call in out.click.call_args_list[start:start + rounds]:
+                        x, y = call.args
+                        self.assertTrue(1144 <= x <= 1232 and 590 <= y <= 642)
+                self.assertEqual(out.engine.ocr.call_count, 4)
+
+    def test_challenge_stuck_after_three_rounds_stops_without_fourth_click(self):
+        out = self.replay([screenshot("awakening")] * 4, [])
+        self.assertFalse(out.result)
+        self.assertIn("三轮", out.report.reason)
+        self.assertEqual(out.click.call_count, 3)
+        self.assertEqual(out.capture.call_count, 4)
+        self.assertEqual(out.updates[-1]["attempts"], 1)
+        out.engine.ocr.assert_not_called()
+
+    def test_challenge_does_not_retry_after_already_leaving_entry_page(self):
+        a, v, r = (screenshot(name) for name in ("awakening", "victory", "reward"))
+        loading = np.zeros_like(a)
+        out = self.replay([a, loading, a, v, r, r, a], ["50/50", "50/50"])
+        self.assertTrue(out.result)
+        self.assertEqual(out.click.call_count, 3)  # 挑战一次、胜利一次、奖励关闭一次。
+
+    def test_missing_screenshot_does_not_trigger_blind_challenge_retry(self):
+        a, v, r = (screenshot(name) for name in ("awakening", "victory", "reward"))
+        out = self.replay([a, None, a, v, r, r, a], ["50/50", "50/50"])
+        self.assertTrue(out.result)
+        self.assertEqual(out.click.call_count, 4)  # 确认仍在觉醒页后才第二次点挑战。
+
+    def test_stuck_victory_stops_after_three_click_batches(self):
+        out = self.replay([screenshot("victory")] * 13, [])
+        self.assertFalse(out.result)
+        self.assertIn("仍未出现奖励页", out.report.reason)
+        self.assertEqual(out.click.call_count, 9)  # 每轮保留原来的 2–3 次快点。
+        self.assertEqual(sum(call.args[0] == .5 for call in out.wait.call_args_list), 3)
+        out.engine.ocr.assert_not_called()
+
+    def test_reward_closing_animation_is_rechecked_after_half_second(self):
+        r, a = screenshot("reward"), screenshot("awakening")
+        for rounds in (1, 3):
+            with self.subTest(rounds=rounds):
+                # 快截图仍显示奖励；最后一轮等待 0.5 秒后，实际已返回觉醒页。
+                out = self.replay([r] * (rounds * 3 + 1) + [a], ["50/50", "50/50"])
+                self.assertTrue(out.result)
+                self.assertEqual(out.click.call_count, rounds * 2)
+                self.assertEqual(out.wait.call_args_list[-1].args[0], .5)
+                self.assertEqual(sum(call.args[0] == .5 for call in out.wait.call_args_list), rounds)
+                self.assertEqual(out.engine.ocr.call_count, 2)
+
+    def test_victory_third_round_checks_delayed_reward_before_failing(self):
+        v, r, a = (screenshot(name) for name in ("victory", "reward", "awakening"))
+        out = self.replay([v] * 12 + [r, r, a], ["50/50", "50/50"])
+        self.assertTrue(out.result)
+        self.assertEqual(out.click.call_count, 10)
+        self.assertEqual(sum(call.args[0] == .5 for call in out.wait.call_args_list), 3)
+        self.assertEqual(out.engine.ocr.call_count, 2)
+
+    def test_stop_during_challenge_wait_prevents_retry(self):
+        event = threading.Event()
+
+        def stop_after_click(stack, click):
+            def stop(seconds, stop_event):
+                self.assertEqual(seconds, task.CHALLENGE_RETRY_INTERVAL)
+                event.set()
+                raise TaskCancelled()
+            stack.enter_context(patch.object(task, "_wait", side_effect=stop))
+
+        out = self.replay([screenshot("awakening")], [], event=event, setup=stop_after_click)
+        self.assertTrue(out.report.cancelled)
+        self.assertEqual(out.click.call_count, 1)
+
+    def test_disabled_bonus_is_confirmed_off_and_not_reopened_at_finish(self):
+        l, off, on, v, r = (screenshot(name) for name in (
+            'awakening_locked', 'bonus_off', 'bonus_on', 'victory', 'reward'))
+        for frames, expected_toggles in (([l, off, l, v, r, r, l], 0),
+                                          ([l, on, off, l, v, r, r, l], 1)):
+            out = self.replay(frames, ['50/50', '50/50'], manage_bonus=True, enable_bonus=False)
+            self.assertTrue(out.result)
+            timer_clicks = [call for call in out.click.call_args_list
+                            if 772 <= call.args[0] <= 886 and 140 <= call.args[1] <= 170]
+            self.assertEqual(len(timer_clicks), expected_toggles)
+            lantern_clicks = [call for call in out.click.call_args_list
+                              if 524 <= call.args[0] <= 559 and 28 <= call.args[1] <= 76]
+            self.assertEqual(len(lantern_clicks), 1)
 
     def test_start_on_full_reward_returns_without_any_challenge(self):
         r, a = screenshot("reward"), screenshot("awakening")
@@ -192,10 +287,12 @@ class SuperOniFlowTests(TestCase):
 
     def test_full_count_does_not_succeed_until_awakening_returns(self):
         r = screenshot("reward")
-        out = self.replay([r] * 8, ["50/50", "50/50"])
+        out = self.replay([r] * 11, ["50/50", "50/50"])
         self.assertFalse(out.result)
         self.assertIn("仍未关闭", out.report.reason)
         self.assertEqual(out.updates[-1]["attempts"], 0)
+        self.assertEqual(out.click.call_count, 6)  # 三轮，每轮最多两次。
+        self.assertEqual(sum(call.args[0] == .5 for call in out.wait.call_args_list), 3)
 
     def test_wrong_floor_and_missing_screenshots_time_out_without_click(self):
         wrong_floor = screenshot("awakening")
@@ -335,11 +432,14 @@ class SuperOniUiTests(IsolatedAsyncioTestCase):
         ui._build_super_oni_controls()
         ui.start_selected_tool()
         self.assertTrue(ui.tool_running)
-        ui.page.run_thread.assert_called_once_with(ui._tool_worker, "super_oni")
+        ui.page.run_thread.assert_called_once()
+        worker, slot, target, stop_event, settings = ui.page.run_thread.call_args.args
+        self.assertEqual(worker, ui._super_oni_worker)
+        self.assertEqual(slot, 0)
         self.assertIn("未识别", ui.super_oni_progress.value)
 
         def run(**kwargs):
-            self.assertIs(kwargs["stop_event"], ui.tool_stop_event)
+            self.assertIs(kwargs["stop_event"], stop_event)
             kwargs["progress_callback"]({"tickets": 50, "attempts": 3, "stage": "已刷满，已返回觉醒一层"})
             return True
 
@@ -347,7 +447,7 @@ class SuperOniUiTests(IsolatedAsyncioTestCase):
         backend = SimpleNamespace(configure_runtime_paths=Mock(), configure_mumu_target=Mock(return_value=True),
                                   reset_screenshot_backend=Mock())
         with patch("ui_app.tool_sessions.automation.create_session", return_value=backend):
-            ui._tool_worker("super_oni")
+            worker(slot, target, stop_event, settings)
         kind, progress = ui.ui_queue.get_nowait()
         self.assertEqual(kind, "super_oni_progress")
         ui._apply_super_oni_progress(progress)
@@ -357,8 +457,8 @@ class SuperOniUiTests(IsolatedAsyncioTestCase):
         self.assertEqual(kind, "super_oni_result")
         ui._apply_super_oni_result(instance_result)
         kind, finished = ui.ui_queue.get_nowait()
-        self.assertEqual(kind, "tool_finished")
-        ui._apply_tool_finished(**finished)
+        self.assertEqual(kind, "super_oni_finished")
+        ui._apply_super_oni_finished(**finished)
         self.assertFalse(ui.tool_running)
         self.assertFalse(ui.tool_start_button.disabled)
         self.assertIn("50/50", ui.tool_status.value)

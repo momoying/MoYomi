@@ -176,6 +176,8 @@ def run(
         system = work_item.system
         region = work_item.region
         system_state = state["accounts"][account_name]["systems"][system]
+        if region == CROSS_REGION:
+            system_state = cross_region_task_state(system_state, MERCHANT_TASK)
         if stop_event is not None and stop_event.is_set():
             print("Daily 中控已安全停止")
             _emit_event(event_callback, "controller_stopped")
@@ -332,6 +334,8 @@ def _execute_task(
     account_name, system, region = work_item.account_name, work_item.system, work_item.region
     system_state = state["accounts"][account_name]["systems"][system]
     task_name = task_work.task_name
+    if region == CROSS_REGION:
+        system_state = cross_region_task_state(system_state, task_name)
     run_count = task_work.run_count
     label = TASK_LABELS[task_name]
     runner = services.task_runners[task_name]
@@ -654,12 +658,13 @@ def _save_task_result(
         )
         detail = combined_bounty_detail(system_state)
     elif task_name == MERCHANT_TASK and task_result is not None:
-        set_task_record_result(system_state, MERCHANT_TASK, task_result)
+        set_task_record_result(system_state, MERCHANT_TASK, task_result, region=region)
         detail = MERCHANT_RESULT_DETAILS[task_result]
         if task_result == MERCHANT_STOP_RESULT:
             skipped_count = mark_remaining_merchant_tasks_skipped(
                 state,
                 now_provider(),
+                region=region,
             )
             if skipped_count:
                 print(
@@ -669,7 +674,8 @@ def _save_task_result(
     elif task_name == "liked" and region == CROSS_REGION:
         detail = "跨区好友 ×2 已点赞"
     elif task_name == HEART_TEAM_TASK:
-        system_state[HEART_TEAM_TASK]["reserve_warning"] = outcome.warning
+        target = cross_region_task_state(system_state, task_name) if region == CROSS_REGION else system_state
+        target[HEART_TEAM_TASK]["reserve_warning"] = outcome.warning
     save_state(state, status_path)
     print(f"{label}完成时间已写入: {timestamp}")
     _emit_event(

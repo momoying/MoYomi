@@ -567,10 +567,28 @@ class AssistantDashboard(
             for task_name in UI_TASK_ORDER
         }
         self.cross_region_enabled = ft.Switch(
-            label=f"启用跨区账号（{controller.REGION_LABELS[controller.CROSS_REGION]}）",
+            label="启用跨区账号",
             value=False,
             active_color=COLORS["active"],
             on_change=self._on_cross_region_setting_changed,
+        )
+        self.cross_region_task_checks = {
+            task: ft.Checkbox(label=controller.TASK_LABELS[task], value=True)
+            for task in UI_TASK_ORDER
+        }
+        self.cross_region_heart_role = ft.Dropdown(
+            label="跨区同心队身份", value="none", dense=True,
+            options=[ft.DropdownOption(key="none", text="未配置"),
+                     ft.DropdownOption(key="leader", text="队长"), ft.DropdownOption(key="member", text="成员")],
+        )
+        self.cross_region_tasks_control = ft.Column(
+            [ft.Text("跨区任务", size=13, weight=ft.FontWeight.BOLD),
+             ft.ResponsiveRow(
+                 [ft.Container(checkbox, col={"sm": 6, "md": 6})
+                  for checkbox in self.cross_region_task_checks.values()],
+                 columns=12, spacing=4, run_spacing=2,
+             ),
+             self.cross_region_heart_role], visible=False, spacing=4,
         )
         self.heart_team_role_setting = ft.Dropdown(
             label="同心队身份",

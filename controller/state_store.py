@@ -54,6 +54,7 @@ def _empty_system_state() -> dict[str, Any]:
         "latest_task_completed_at": None,
         "task_enabled": dict(DEFAULT_TASK_ENABLED),
         "cross_region_enabled": False,
+        "cross_region_task_enabled": {task: task in CROSS_REGION_TASKS for task in TASK_ORDER},
     }
 
 
@@ -90,6 +91,8 @@ def _region_task_value(
     task_name: str,
     region: str,
 ) -> Any:
+    if region == CROSS_REGION and task_name not in CROSS_REGION_TASKS:
+        return system_state.get("cross_region_tasks", {}).get(task_name)
     value = system_state.get(task_name)
     if task_name not in CROSS_REGION_TASKS:
         if task_name == MERCHANT_TASK and isinstance(value, dict):
@@ -150,6 +153,8 @@ def set_task_record_result(
     region: str = SAME_REGION,
 ) -> None:
     """写入聚合任务结果，同时保留已有时间及任务自身的数据结构。"""
+    if region == CROSS_REGION and task_name not in CROSS_REGION_TASKS:
+        return set_task_record_result(cross_region_task_state(system_state, task_name), task_name, result)
     result_field = TASK_RESULT_FIELDS[task_name]
     if task_name not in CROSS_REGION_TASKS:
         current_record = system_state.get(task_name)
@@ -271,6 +276,24 @@ def cross_region_is_enabled(system_state: dict[str, Any]) -> bool:
     return system_state.get("cross_region_enabled") is True
 
 
+def cross_region_task_is_enabled(system_state: dict[str, Any], task_name: str) -> bool:
+    if task_name not in TASK_ORDER:
+        return False
+    choices = system_state.get("cross_region_task_enabled")
+    default = task_name in CROSS_REGION_TASKS
+    value = choices.get(task_name, default) if isinstance(choices, dict) else default
+    return value if type(value) is bool else default
+
+
+def cross_region_task_state(system_state: dict[str, Any], task_name: str) -> dict[str, Any]:
+    """点赞和悬赏保留历史分区结构，其他跨区任务拥有独立记录与战斗进度。"""
+    if task_name in CROSS_REGION_TASKS:
+        return system_state
+    if not isinstance(system_state.get("cross_region_tasks"), dict):
+        system_state["cross_region_tasks"] = _empty_system_state()
+    return system_state["cross_region_tasks"]
+
+
 def _normalize_system_state(raw: Any) -> dict[str, Any]:
     raw = raw if isinstance(raw, dict) else {}
     state = _empty_system_state()
@@ -387,6 +410,9 @@ def _normalize_system_state(raw: Any) -> dict[str, Any]:
         for task_name in TASK_ORDER
     }
     state["cross_region_enabled"] = raw.get("cross_region_enabled") is True
+    state["cross_region_task_enabled"] = {task: cross_region_task_is_enabled(raw, task) for task in TASK_ORDER}
+    if isinstance(raw.get("cross_region_tasks"), dict):
+        state["cross_region_tasks"] = _normalize_system_state(raw["cross_region_tasks"])
     return state
 
 
@@ -542,6 +568,8 @@ def record_task_completion(
     region: str = SAME_REGION,
 ) -> str:
     """写入精确到秒的最近完成时间。"""
+    if region == CROSS_REGION and task_name not in CROSS_REGION_TASKS:
+        return record_task_completion(task_name, cross_region_task_state(system_state, task_name), completed_at)
     timestamp = completed_at.astimezone().isoformat(timespec="seconds")
     if task_name in CROSS_REGION_TASKS:
         records = system_state.get(task_name)

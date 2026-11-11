@@ -307,7 +307,8 @@ class DailyPageMixin:
             regions = []
             if controller.task_is_enabled(system_state, task_name):
                 regions.append(controller.SAME_REGION)
-            if controller.cross_region_is_enabled(system_state):
+            if (controller.cross_region_is_enabled(system_state)
+                    and controller.cross_region_task_is_enabled(system_state, task_name)):
                 regions.append(controller.CROSS_REGION)
             if not regions:
                 return
@@ -490,7 +491,7 @@ class DailyPageMixin:
             state, _ = controller.load_state(controller.STATUS_PATH)
             system_state = state["accounts"][account]["systems"][system]
             enabled = (
-                controller.cross_region_is_enabled(system_state)
+                controller.cross_region_is_enabled(system_state) and controller.cross_region_task_is_enabled(system_state, task_name)
                 if task_name == controller.BOUNTY_TASK
                 and region == controller.CROSS_REGION
                 else controller.task_is_enabled(system_state, task_name)

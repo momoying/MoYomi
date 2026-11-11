@@ -221,6 +221,8 @@ class UiRuntimeMixin:
                             self._apply_super_oni_progress(payload)
                         elif event_type == "super_oni_result":
                             self._apply_super_oni_result(payload)
+                        elif event_type == "super_oni_finished":
+                            self._apply_super_oni_finished(**payload)
                     except asyncio.CancelledError:
                         raise
                     except Exception as exc:
