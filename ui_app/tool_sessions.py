@@ -75,7 +75,7 @@ def run_super_oni_targets(settings, targets, stop_event, load_tool, emit):
                     emit("tool_log", ("ERROR", f"{name}：释放截图连接失败：{exc}"))
             stopped = report.cancelled or stop_event.is_set()
             payload = dict(latest, instance_index=index, instance_name=name,
-                           success=success, stopped=stopped, reason=reason)
+                           success=success, stopped=stopped, reason=reason, enable_bonus=target.get("enable_bonus", True))
             emit("super_oni_result", payload)
         return payload
 

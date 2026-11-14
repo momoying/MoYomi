@@ -117,8 +117,11 @@ class ParallelToolTests(TestCase):
 
     def test_threads_receive_independent_bonus_choices(self):
         for choices in ([False, True], [True, False]):
-            summary, *_ = self.run_pair(bonus=choices)
+            summary, events, *_ = self.run_pair(bonus=choices)
             self.assertTrue(summary['success'])
+            for kind, result in events:
+                if kind == 'super_oni_result':
+                    self.assertIs(result['enable_bonus'], choices[int(result['instance_index'])])
 
     def test_one_failure_does_not_cancel_the_other_and_screenshot_uses_failed_device_frame(self):
         summary, events, sessions, screenshots, frames = self.run_pair(fail_first=True)
@@ -360,6 +363,10 @@ class ParallelToolUiTests(TestCase):
                                     'success': False, 'stopped': False, 'reason': '识别失败'})
         self.assertIn('识别失败', ui.super_oni_progress.value)
         self.assertIn('40 / 50', ui.super_oni_secondary_progress.value)
+        ui._apply_super_oni_result({'instance_index': '1', 'tickets': 50, 'success': True,
+                                    'stopped': False, 'enable_bonus': False})
+        self.assertIn('已刷满', ui.super_oni_secondary_progress.value)
+        self.assertNotIn('关闭加成', ui.super_oni_secondary_progress.value)
 
     def test_start_with_duplicate_instances_does_not_launch_worker(self):
         ui = self.dashboard()

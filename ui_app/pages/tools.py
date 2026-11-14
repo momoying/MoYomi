@@ -58,7 +58,7 @@ class ToolsPageMixin:
              ft.Divider(height=8, color=COLORS["border"]),
              self.super_oni_secondary, self.super_oni_secondary_bonus,
              self.super_oni_secondary_start, self.super_oni_secondary_progress,
-             ft.Text("自动锁阵；按各实例的选择开启或关闭觉醒加成。支持中途继续，刷满后关闭使用的加成并返回觉醒一层。",
+             ft.Text("自动锁阵；勾选时开启觉醒加成，未勾选时跳过加成操作。支持中途继续，刷满后关闭使用的加成并返回觉醒一层。",
                      size=12, color=COLORS["muted"])],
             spacing=8, visible=False,
         )
@@ -282,7 +282,9 @@ class ToolsPageMixin:
     def _apply_super_oni_result(self, result):
         if not self._super_oni_event_is_current(result):
             return
-        stage = ("已安全停止" if result["stopped"] else "已刷满，已关闭加成并返回觉醒一层"
+        completed = ("已刷满，已关闭加成并返回觉醒一层" if result.get("enable_bonus", True)
+                     else "已刷满，已返回觉醒一层")
+        stage = ("已安全停止" if result["stopped"] else completed
                  if result["success"] else "失败：" + str(result.get("reason") or "执行失败"))
         self._apply_super_oni_progress(dict(result, stage=stage))
         control = self._super_oni_rows.get(str(result["instance_index"]))
@@ -728,7 +730,7 @@ class ToolsPageMixin:
             self.tool_status.color = COLORS["done"]
             self._append_tool_log_now("SUCCESS", f"{label}已安全停止")
         elif success:
-            self.tool_status.value = "已刷满 50/50，已关闭觉醒加成，已返回觉醒一层" if tool_name == "super_oni" else "运行结束"
+            self.tool_status.value = "已刷满 50/50，已返回觉醒一层" if tool_name == "super_oni" else "运行结束"
             self.tool_status.color = COLORS["done"]
             self._append_tool_log_now("SUCCESS", f"{label}运行结束")
         else:
