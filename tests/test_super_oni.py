@@ -147,20 +147,21 @@ class SuperOniFlowTests(TestCase):
                 self.assertEqual(out.click.call_count, 6)  # 每局挑战一次、胜利一次、领奖一次。
                 self.assertEqual(out.engine.ocr.call_count, 4)
 
-    def test_challenge_stuck_waits_full_eight_seconds_before_stopping(self):
+    def test_challenge_stuck_waits_full_timeout_before_stopping(self):
         out = self.replay(itertools.repeat(screenshot("awakening")), [])
         self.assertFalse(out.result)
-        self.assertIn("8 秒", out.report.reason)
-        self.assertEqual(out.elapsed, 8)
+        self.assertIn(f"{task.TRANSITION_TIMEOUT:g} 秒", out.report.reason)
+        self.assertEqual(out.elapsed, task.TRANSITION_TIMEOUT)
         self.assertEqual(out.click.call_count, 1)
-        self.assertEqual(out.capture.call_count, 17)
-        self.assertEqual([call.args[0] for call in out.wait.call_args_list], [.5] * 16)
+        polls = int(task.TRANSITION_TIMEOUT / task.SCREENSHOT_INTERVAL)
+        self.assertEqual(out.capture.call_count, polls + 1)
+        self.assertEqual([call.args[0] for call in out.wait.call_args_list], [.5] * polls)
         self.assertEqual(out.updates[-1]["attempts"], 1)
         out.engine.ocr.assert_not_called()
 
-    def test_slow_challenge_enters_at_three_seconds_and_at_eight_second_boundary(self):
+    def test_slow_challenge_enters_at_three_seconds_and_at_timeout_boundary(self):
         a, v, r = (screenshot(name) for name in ("awakening", "victory", "reward"))
-        for delay in (3, 7.5, 8):
+        for delay in (3, task.TRANSITION_TIMEOUT - .5, task.TRANSITION_TIMEOUT):
             with self.subTest(delay=delay):
                 following = iter([v, r, r, a])
                 def frames():
@@ -191,18 +192,83 @@ class SuperOniFlowTests(TestCase):
         self.assertEqual(sum(call.args[0] == .5 for call in out.wait.call_args_list), 3)
         out.engine.ocr.assert_not_called()
 
-    def test_slow_reward_return_waits_for_challenge_button_without_reclicking(self):
+    def test_slow_reward_return_uses_one_second_polls_within_original_timeout(self):
         r, a = screenshot("reward"), screenshot("awakening")
-        for delay in (3, 7.5, 8):
+        for delay in (3, task.TRANSITION_TIMEOUT - .5, task.TRANSITION_TIMEOUT):
             with self.subTest(delay=delay):
                 def frames():
                     return a if task.time.monotonic() >= delay else r
                 out = self.replay(frames, ["50/50", "50/50"])
                 self.assertTrue(out.result)
-                self.assertEqual(out.click.call_count, 2)
+                self.assertGreaterEqual(out.click.call_count, 2)
                 self.assertGreaterEqual(out.elapsed, delay)
-                self.assertLessEqual(out.elapsed, 8)
+                self.assertLessEqual(out.elapsed, task.TRANSITION_TIMEOUT)
                 self.assertEqual(out.engine.ocr.call_count, 2)
+
+    def test_ticket_reminders_consume_first_clicks_then_reward_is_closed_on_fresh_one_second_polls(self):
+        r, a = screenshot("reward"), screenshot("awakening")
+        for required_clicks in (3, 4):
+            with self.subTest(required_clicks=required_clicks):
+                clicks, captures = [], []
+                def setup(stack, click):
+                    click.side_effect = lambda *_: clicks.append(task.time.monotonic()) or True
+                    stack.enter_context(patch.object(task.random, "uniform", return_value=.1))
+                def frames():
+                    captures.append(task.time.monotonic())
+                    return a if len(clicks) >= required_clicks else r
+                out = self.replay(frames, ["50/50", "50/50"], setup=setup)
+                self.assertTrue(out.result)
+                self.assertEqual(out.click.call_count, required_clicks)
+                self.assertEqual(out.engine.ocr.call_count, 2)
+                self.assertEqual(out.updates[-1]["attempts"], 0)
+                # 两次快点后先等待 0.5 秒稳定画面，再每隔 1 秒用新截图补点。
+                self.assertEqual([round(stamp, 1) for stamp in clicks[:3]], [0, .1, 1.7])
+                self.assertEqual([round(stamp, 1) for stamp in captures[-2:]],
+                                 [round(clicks[-1], 1), round(clicks[-1] + 1, 1)])
+                self.assertLessEqual(out.elapsed, task.TRANSITION_TIMEOUT)
+
+    def test_stopping_during_one_second_reward_wait_prevents_supplemental_click(self):
+        event = threading.Event()
+        def setup(stack, click):
+            advance_time = task._wait.side_effect
+            def stop(seconds, stop_event):
+                if seconds == 1:
+                    event.set()
+                    raise TaskCancelled()
+                advance_time(seconds, stop_event)
+            stack.enter_context(patch.object(task, "_wait", side_effect=stop))
+        out = self.replay(itertools.repeat(screenshot("reward")), ["50/50", "50/50"], event=event, setup=setup)
+        self.assertTrue(out.report.cancelled)
+        self.assertEqual(out.click.call_count, 2)
+        self.assertEqual(out.engine.ocr.call_count, 2)
+
+    def test_reward_supplemental_clicks_stop_at_two_but_polling_continues_until_timeout(self):
+        clicks = []
+        def setup(stack, click):
+            click.side_effect = lambda *_: clicks.append(task.time.monotonic()) or True
+            stack.enter_context(patch.object(task.random, "uniform", return_value=.1))
+        out = self.replay(itertools.repeat(screenshot("reward")), ["50/50", "50/50"], setup=setup)
+        self.assertFalse(out.result)
+        self.assertEqual(out.click.call_count, 4)  # 首次快点两下，额外补点最多两下。
+        self.assertEqual([round(stamp, 1) for stamp in clicks], [0, .1, 1.7, 2.7])
+        self.assertEqual(out.elapsed, task.TRANSITION_TIMEOUT)
+        self.assertEqual(out.engine.ocr.call_count, 2)
+
+    def test_loading_frame_does_not_consume_reward_supplemental_click_allowance(self):
+        r, a = screenshot("reward"), screenshot("awakening")
+        loading = np.zeros_like(r)
+        clicks = []
+        def setup(stack, click):
+            click.side_effect = lambda *_: clicks.append(task.time.monotonic()) or True
+            stack.enter_context(patch.object(task.random, "uniform", return_value=.1))
+        def frames():
+            if len(clicks) == 4:
+                return a
+            return loading if 1 <= task.time.monotonic() < 2 else r
+        out = self.replay(frames, ["50/50", "50/50"], setup=setup)
+        self.assertTrue(out.result)
+        self.assertEqual([round(stamp, 1) for stamp in clicks], [0, .1, 2.7, 3.7])
+        self.assertEqual(out.engine.ocr.call_count, 2)
 
     def test_reward_disappearing_does_not_finish_until_challenge_button_returns(self):
         r, a = screenshot("reward"), screenshot("awakening")
@@ -319,10 +385,13 @@ class SuperOniFlowTests(TestCase):
                     return r if task.time.monotonic() < 1 else stalled
                 out = self.replay(frames, ["50/50", "50/50"])
                 self.assertFalse(out.result)
-                self.assertIn("8 秒仍未出现", out.report.reason)
+                self.assertIn(f"{task.TRANSITION_TIMEOUT:g} 秒仍未出现", out.report.reason)
                 self.assertEqual(out.updates[-1]["attempts"], 0)
-                self.assertEqual(out.click.call_count, 2)
-                self.assertEqual(out.elapsed, 8)
+                if name == "奖励未关闭":
+                    self.assertGreater(out.click.call_count, 2)
+                else:
+                    self.assertEqual(out.click.call_count, 2)
+                self.assertEqual(out.elapsed, task.TRANSITION_TIMEOUT)
 
     def test_wrong_floor_and_missing_screenshots_time_out_without_click(self):
         wrong_floor = screenshot("awakening")

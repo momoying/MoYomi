@@ -24,7 +24,9 @@ SCREENSHOT_INTERVAL = .5
 BATTLE_SCREENSHOT_INTERVAL = 2.0
 BATTLE_TIMEOUT = 300.0
 PAGE_TIMEOUT = 30.0
-TRANSITION_TIMEOUT = 8.0
+TRANSITION_TIMEOUT = 10.0
+REWARD_RETRY_INTERVAL = 1.0
+REWARD_RETRY_LIMIT = 2
 OCR_RETRY_LIMIT = 10
 OCR_RETRY_INTERVAL = 2.0
 TARGET_TICKETS = 50
@@ -223,9 +225,10 @@ def _advance(frame, marker, click_count, areas, stop_event):
     return frame
 
 
-def _wait_for_page(frame, ready, deadline, stop_event):
-    """等待已点击的页面切换，每 0.5 秒检测；沿用点击时的截止时间。"""
-    utils.config["screenshot_speed"] = SCREENSHOT_INTERVAL
+def _wait_for_page(frame, ready, deadline, stop_event, *, interval=SCREENSHOT_INTERVAL, on_retry=None):
+    """按间隔重新截图；补点仅使用新截图，且不重置切页截止时间。"""
+    utils.config["screenshot_speed"] = interval
+    fresh = False
     while True:
         if frame is not None:
             if (frame.shape[:2] != (720, 1280) or _matches(frame, ASSETS.I_FAILED) is not None
@@ -234,8 +237,11 @@ def _wait_for_page(frame, ready, deadline, stop_event):
         remaining = deadline - time.monotonic()
         if remaining <= 0:
             return None
-        _wait(min(SCREENSHOT_INTERVAL, remaining), stop_event)
+        if fresh and frame is not None and on_retry is not None:
+            on_retry(frame)
+        _wait(min(interval, max(0, deadline - time.monotonic())), stop_event)
         frame = DEVICE.screenshot()
+        fresh = True
 
 
 def run(stop_event=None, progress_callback=None, enable_bonus=True):
@@ -320,10 +326,18 @@ def run(stop_event=None, progress_callback=None, enable_bonus=True):
                 transition_deadline = time.monotonic() + TRANSITION_TIMEOUT
                 pending_frame = _advance(frame, ASSETS.I_REWARD, (1, 2),
                                          (ASSETS.C_REWARD_LEFT, ASSETS.C_REWARD_RIGHT), stop_event)
+                reward_retries = 0
+                def retry_reward(image):
+                    nonlocal reward_retries
+                    if reward_retries < REWARD_RETRY_LIMIT and _matches(image, ASSETS.I_REWARD) is not None:
+                        _click(random.choice((ASSETS.C_REWARD_LEFT, ASSETS.C_REWARD_RIGHT)).area, stop_event)
+                        reward_retries += 1
+
                 pending_frame = _wait_for_page(pending_frame,
-                    lambda image: _awakening_challenge(image) is not None, transition_deadline, stop_event)
+                    lambda image: _awakening_challenge(image) is not None, transition_deadline, stop_event,
+                    interval=REWARD_RETRY_INTERVAL, on_retry=retry_reward)
                 if pending_frame is None:
-                    return fail("关闭奖励页后等待 8 秒仍未出现觉醒一层挑战按钮")
+                    return fail(f"关闭奖励页后等待 {TRANSITION_TIMEOUT:g} 秒仍未出现觉醒一层挑战按钮")
                 continue
 
             if _matches(frame, ASSETS.I_VICTORY) is not None and phase != "return":
@@ -378,7 +392,7 @@ def run(stop_event=None, progress_callback=None, enable_bonus=True):
             pending_frame = _wait_for_page(frame, lambda image: _awakening_challenge(image) is None,
                                            transition_deadline, stop_event)
             if pending_frame is None:
-                return fail("点击挑战后等待 8 秒，挑战按钮仍未消失，已停止")
+                return fail(f"点击挑战后等待 {TRANSITION_TIMEOUT:g} 秒，挑战按钮仍未消失，已停止")
             phase = "battle"
             deadline = time.monotonic() + BATTLE_TIMEOUT
             progress("战斗中")
