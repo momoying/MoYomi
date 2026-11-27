@@ -273,13 +273,9 @@ class AssistantDashboard(
         )
         saved_index = str(self.settings.get("mumu_index") or "")
         saved_address = str(self.settings.get("adb_port") or "")
+        selection_key, selection_value = ("index", saved_index) if saved_index else ("adb_port", saved_address)
         selected_index = next(
-            (
-                item["index"]
-                for item in self.mumu_instances
-                if item["index"] == saved_index
-                or item["adb_port"] == saved_address
-            ),
+            (item["index"] for item in self.mumu_instances if item[selection_key] == selection_value),
             None,
         )
         if selected_index is None and len(self.mumu_instances) == 1:

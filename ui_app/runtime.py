@@ -19,6 +19,7 @@ import flet as ft
 import main as controller
 from module.appearance import DEFAULT_ACCENT, extract_monet_palette
 from module.notifications import clear_project_sendkey, get_serverchan_sendkey, set_project_sendkey
+from tasks.RokuDo.assets import TEMPLATE_LABELS
 from ui_app.constants import *
 from ui_app.settings_store import *
 from ui_app.components import *
@@ -126,7 +127,9 @@ class UiRuntimeMixin:
             self.ui_queue.put(("tool_log", (level, message)))
 
 
-    def _append_tool_log_now(self, level: str, message: str) -> None:
+    def _append_tool_log_now(
+        self, level: str, message: str, *, view: ft.ListView | None = None, source: str = "小工具",
+    ) -> None:
         standardized = re.match(
             r"^\d{2}:\d{2}:\d{2} \[(INFO|WARN|ERROR|SUCCESS|VISION|ACTION|DEBUG)\] ",
             message,
@@ -155,7 +158,7 @@ class UiRuntimeMixin:
         logged_at = datetime.now()
         if not standardized:
             timestamp = logged_at.strftime("%H:%M:%S")
-            rendered = f"{timestamp} [{level}] [小工具] {message}"
+            rendered = f"{timestamp} [{level}] [{source}] {message}"
         else:
             parsed_time = datetime.strptime(message[:8], "%H:%M:%S").time()
             logged_at = datetime.combine(logged_at.date(), parsed_time)
@@ -174,17 +177,16 @@ class UiRuntimeMixin:
             selectable=True,
         )
         control.data = (logged_at.timestamp(), self.tool_log_sequence)
-        self.tool_log_view.controls.append(control)
-        self.tool_log_view.controls.sort(
+        controls = (self.tool_log_view if view is None else view).controls
+        controls.append(control)
+        controls.sort(
             key=lambda item: item.data
             if isinstance(item.data, tuple)
             else (float("inf"), 0)
         )
         maximum = int(self.settings.get("log_max_lines", 300))
-        if len(self.tool_log_view.controls) > maximum:
-            del self.tool_log_view.controls[
-                : len(self.tool_log_view.controls) - maximum
-            ]
+        if len(controls) > maximum:
+            del controls[: len(controls) - maximum]
 
 
     async def _ui_update_pump(self) -> None:
@@ -207,6 +209,13 @@ class UiRuntimeMixin:
                         elif event_type == "tool_log":
                             level, message = payload
                             self._append_tool_log_now(level, message)
+                        elif event_type == "rokudo_click":
+                            template, (x, y) = payload
+                            label = TEMPLATE_LABELS.get(template, template)
+                            self._append_tool_log_now(
+                                "INFO", f"模板 {label}，点击位置 ({x}, {y})",
+                                view=self.rokudo_log_view, source="六道之门",
+                            )
                         elif event_type == "controller_event":
                             self._apply_controller_event(payload)
                         elif event_type == "worker_finished":

@@ -43,6 +43,12 @@ class _Backend:
 
 
 class ErrorScreenshotTests(unittest.TestCase):
+    def test_failure_reporting_does_not_request_new_frame(self):
+        backend = _Backend(captured="fresh")
+        manager = ErrorScreenshotManager(backend=backend, warning=lambda _: None)
+        self.assertIsNone(manager.save("task", "failed", capture_if_missing=False))
+        self.assertEqual(backend.capture_calls, 0)
+
     def test_chinese_directory_and_filename_are_written_without_encoding_conversion(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             directory = Path(temp_dir) / "报错截图"

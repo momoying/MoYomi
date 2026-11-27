@@ -11,6 +11,10 @@ class TaskCancelled(Exception):
     """用户停止当前调用，不属于任务失败。"""
 
 
+class ScreenshotUnavailable(OSError):
+    """设备持续无法截图，界面恢复流程无法继续。"""
+
+
 @dataclass
 class ExecutionReport:
     stage: Optional[str] = None
@@ -82,7 +86,7 @@ def run_task_call(runner: Callable[..., Any], *args, stop_event=None, finish_cur
         report.reason = "用户请求停止"
     except Exception as exc:
         report.exception = exc
-        report_failure(f"{type(exc).__name__}: {exc}")
+        report_failure(str(exc) if isinstance(exc, ScreenshotUnavailable) else f"{type(exc).__name__}: {exc}")
     finally:
         if not finish_current and stop_event is not None and stop_event.is_set():
             report.cancelled = True

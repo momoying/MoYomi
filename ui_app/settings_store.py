@@ -4,10 +4,11 @@ from __future__ import annotations
 
 import json
 import os
-import subprocess
 from pathlib import Path
 from typing import Any
 
+from module.mumu import discover_running_mumu_instances as _discover_running_mumu_instances
+from module.mumu import resolve_mumu_manager_path
 from ui_app.constants import *
 
 
@@ -18,17 +19,6 @@ _LEGACY_SCHEDULE_KEYS = (
     "scheduled_run_weekdays",
     "scheduled_run_last_triggered_at",
 )
-
-
-def resolve_mumu_manager_path(mumu_path: str | Path) -> Path:
-    """兼容新版 nx_main 与 MuMu 12 旧版 shell 安装结构。"""
-    root = Path(mumu_path).expanduser()
-    candidates = (
-        root / "nx_main" / "MuMuManager.exe",
-        root / "shell" / "MuMuManager.exe",
-        root / "MuMuManager.exe",
-    )
-    return next((path for path in candidates if path.is_file()), candidates[0])
 
 
 def resolve_mumu_adb_path(mumu_path: str | Path) -> Path | None:
@@ -147,44 +137,4 @@ def load_ui_settings(path: Path = SETTINGS_PATH) -> dict[str, Any]:
 def discover_running_mumu_instances(
     manager_path: Path = MUMU_MANAGER_PATH,
 ) -> list[dict[str, str]]:
-    """通过 MuMuManager 获取正在运行实例及其真实 ADB 地址。"""
-    manager_path = Path(manager_path)
-    if not manager_path.is_file():
-        return []
-    try:
-        result = subprocess.run(
-            [str(manager_path), "info", "-v", "all"],
-            capture_output=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=10,
-        )
-        if result.returncode != 0:
-            return []
-        output = result.stdout.strip()
-        first_brace = output.find("{")
-        last_brace = output.rfind("}")
-        if first_brace < 0 or last_brace < first_brace:
-            return []
-        raw = json.loads(output[first_brace : last_brace + 1])
-    except (OSError, subprocess.SubprocessError, ValueError, json.JSONDecodeError):
-        return []
-
-    instances: list[dict[str, str]] = []
-    for item in raw.values() if isinstance(raw, dict) else ():
-        if not isinstance(item, dict) or not item.get("is_android_started"):
-            continue
-        host = str(item.get("adb_host_ip") or "").strip()
-        port = item.get("adb_port")
-        if not host or port in (None, ""):
-            continue
-        index = str(item.get("index", "")).strip()
-        address = f"{host}:{port}"
-        instances.append(
-            {
-                "index": index,
-                "name": str(item.get("name") or f"MuMu 实例 {index}"),
-                "adb_port": address,
-            }
-        )
-    return sorted(instances, key=lambda item: int(item["index"]))
+    return _discover_running_mumu_instances(manager_path) or []

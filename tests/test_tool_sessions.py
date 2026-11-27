@@ -23,6 +23,19 @@ TARGETS = [
 
 
 class DeviceSessionTests(TestCase):
+    def test_binding_rejects_mismatched_instance_and_port_before_connecting(self):
+        backend = automation.create_session()
+        previous_address = backend.adb_port
+        backend.connect_to_mumu = Mock(return_value=True)
+        backend.resolve_mumu_manager_path = Mock(return_value=Mock(**{"is_file.return_value": True}))
+        backend.discover_running_mumu_instances = Mock(return_value=TARGETS)
+        backend._latest_screenshot_frame = object()
+        with self.assertRaisesRegex(OSError, "绑定已失效"):
+            backend.configure_mumu_target(TARGETS[0]["adb_port"], "1")
+        backend.connect_to_mumu.assert_not_called()
+        self.assertEqual(backend.adb_port, previous_address)
+        self.assertIsNone(backend.get_last_screenshot())
+
     def test_parallel_capture_input_and_configuration_stay_on_their_own_devices(self):
         original = (automation.adb_port, dict(automation.config), automation.get_last_screenshot())
         sessions = [automation.create_session(), automation.create_session()]
@@ -30,6 +43,7 @@ class DeviceSessionTests(TestCase):
         barrier = threading.Barrier(2)
         for session, target, frame in zip(sessions, TARGETS, frames):
             session.connect_to_mumu = Mock(return_value=True)
+            session.discover_running_mumu_instances = Mock(return_value=TARGETS)
             self.assertTrue(session.configure_mumu_target(target['adb_port'], target['index']))
             session.config['screenshot_speed'] = 0
             session._get_mumu_capture = Mock(return_value=SimpleNamespace(
@@ -65,6 +79,7 @@ class ParallelToolTests(TestCase):
             backend = real_factory()
             backend.configure_runtime_paths = Mock()
             backend.connect_to_mumu = Mock(return_value=True)
+            backend.discover_running_mumu_instances = Mock(return_value=TARGETS)
             backend.reset_screenshot_backend = Mock(wraps=backend.reset_screenshot_backend)
             sessions.append(backend)
             return backend
@@ -289,6 +304,7 @@ class ParallelToolUiTests(TestCase):
             backend.configure_runtime_paths = Mock()
             backend.connect_to_mumu = Mock(return_value=True)
             backend.reset_screenshot_backend = Mock()
+            backend.discover_running_mumu_instances = Mock(return_value=TARGETS)
             sessions.append(backend)
             return backend
 

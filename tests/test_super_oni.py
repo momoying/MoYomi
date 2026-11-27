@@ -582,4 +582,4 @@ class SuperOniUiTests(IsolatedAsyncioTestCase):
         self.assertIn("12 次", ui.super_oni_progress.value)
         self.assertIn("已返回觉醒一层", ui.super_oni_progress.value)
         ui.page.update.assert_called()
-        self.assertEqual(list(TOOL_LABELS)[-2:], ["super_oni", "baigui"])
+        self.assertEqual(list(TOOL_LABELS)[-3:], ["super_oni", "rokudo", "baigui"])

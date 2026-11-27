@@ -28,6 +28,7 @@ from module.base.device import TaskDevice
 from module.menu import try_open_activity_menu_once
 from module.logging import TaskLogger
 from module.ocr import create_ocr
+from module.task_execution import ScreenshotUnavailable
 
 
 from tasks.HeartTeam.assets import HeartTeamAssets
@@ -1372,7 +1373,7 @@ def run(
     # 5. 战斗已完成，收尾异常仅触发恢复；用户中止仍原样向上传递。
     try:
         cleanup_succeeded = _leave_team_to_courtyard()
-    except KeyboardInterrupt:
+    except (KeyboardInterrupt, ScreenshotUnavailable):
         raise
     except Exception as exc:
         cleanup_succeeded = False

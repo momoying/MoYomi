@@ -382,6 +382,8 @@ class ToolsPageMixin:
         self.market_refresh_count_control.visible = tool_name == "market_sniper"
         self.super_oni_options_control.visible = tool_name == "super_oni"
         self.baigui_options_control.visible = tool_name == "baigui"
+        self.rokudo_max_runs.visible = self.rokudo_log_view.visible = tool_name == "rokudo"
+        self.tool_log_view.visible = tool_name != "rokudo"
         self.tool_start_button.content = "全部启动" if tool_name == "super_oni" else "开始"
         self.tool_start_button.disabled = False
         if tool_name == "super_oni":
@@ -400,6 +402,16 @@ class ToolsPageMixin:
 
 
     def _build_tools_page(self) -> ft.Control:
+        self.rokudo_max_runs = ft.TextField(
+            label="最多通关次数",
+            keyboard_type=ft.KeyboardType.NUMBER,
+            border_radius=10,
+            dense=True,
+            visible=False,
+        )
+        self.rokudo_log_view = ft.ListView(
+            expand=True, spacing=5, auto_scroll=True, padding=2, visible=False,
+        )
         self.tool_title = ft.Text(
             TOOL_LABELS[self.active_tool],
             size=18,
@@ -417,6 +429,7 @@ class ToolsPageMixin:
                     self.secret_attempts_control,
                     self.market_refresh_count_control,
                     self._build_super_oni_controls(),
+                    self.rokudo_max_runs,
                     self._build_baigui_controls(),
                     ft.Divider(height=8, color=COLORS["border"]),
                     ft.Row(
@@ -440,7 +453,7 @@ class ToolsPageMixin:
         tool_log_panel = self._panel(
             "小工具日志",
             ft.Icons.TERMINAL_ROUNDED,
-            self.tool_log_view,
+            ft.Column([self.tool_log_view, self.rokudo_log_view], expand=True),
             expand=True,
         )
         content = ft.Row(
@@ -478,6 +491,11 @@ class ToolsPageMixin:
         if self.tool_running:
             return
         if self.running:
+            if self.active_tool == "rokudo":
+                self.tool_status.value = "一键长草正在运行，不能同时启动小工具"
+                self.tool_status.color = COLORS["warning"]
+                self._safe_update()
+                return
             self.append_tool_log("ERROR", "一键长草正在运行，不能同时启动小工具")
             return
         if self.active_tool == "baigui":
@@ -510,6 +528,16 @@ class ToolsPageMixin:
                 self.append_tool_log("WARN", "刷新次数需大于 0")
                 self._safe_update()
                 return
+        if self.active_tool == "rokudo":
+            try:
+                max_runs = int(str(self.rokudo_max_runs.value).strip())
+            except ValueError:
+                max_runs = 0
+            self.rokudo_max_runs.error_text = None if max_runs > 0 else "请输入大于 0 的整数"
+            if max_runs <= 0:
+                self._safe_update()
+                return
+        self.refresh_mumu_instances()
         if not self.save_settings():
             self.tool_status.value = "请先在设置页选择可用的 MuMu 实例"
             self.tool_status.color = COLORS["error"]
@@ -541,10 +569,11 @@ class ToolsPageMixin:
         self.running_badge_text.value = f"{TOOL_LABELS[self.active_tool]}运行中"
         self.tool_status.value = f"{TOOL_LABELS[self.active_tool]}正在运行"
         self.tool_status.color = COLORS["active"]
-        self.append_tool_log(
-            "INFO",
-            f"准备启动{TOOL_LABELS[self.active_tool]}",
-        )
+        if self.active_tool == "rokudo":
+            self.rokudo_max_runs.disabled = True
+            self.rokudo_log_view.controls.clear()
+        else:
+            self.append_tool_log("INFO", f"准备启动{TOOL_LABELS[self.active_tool]}")
 
 
     def stop_selected_tool(self, _event: Any = None) -> None:
@@ -560,7 +589,8 @@ class ToolsPageMixin:
         self.tool_start_button.content = "停止中"
         self.tool_status.value = "正在等待当前截图步骤结束"
         self.tool_status.color = COLORS["warning"]
-        self.append_tool_log("WARN", "已请求安全停止小工具")
+        if self.active_tool != "rokudo":
+            self.append_tool_log("WARN", "已请求安全停止小工具")
         self._safe_update()
 
 
@@ -572,9 +602,13 @@ class ToolsPageMixin:
 
 
     def _tool_worker(self, tool_name: str) -> None:
-        from module.task_execution import ExecutionReport, run_task_call
+        from module.task_execution import ExecutionReport, ScreenshotUnavailable, run_task_call
 
-        writer = LineWriter(lambda line: self.append_tool_log("INFO", line))
+        def log(level, message):
+            if tool_name != "rokudo":
+                self.append_tool_log(level, message)
+
+        writer = LineWriter(lambda line: log("INFO", line))
         success = False
         failure_reason = None
         failure_stage = "failed"
@@ -632,22 +666,29 @@ class ToolsPageMixin:
                         nickname=self.settings.get("baigui_nickname", ""),
                         progress_callback=lambda progress: self.ui_queue.put(("baigui_progress", dict(progress))),
                     )
+                elif tool_name == "rokudo":
+                    runner = lambda: module.run(
+                        max_runs=int(self.rokudo_max_runs.value),
+                        stop_event=self.tool_stop_event,
+                        click_callback=lambda template, point: self.ui_queue.put(("rokudo_click", (template, point))),
+                    )
                 else:
                     runner = lambda: module.run(stop_event=self.tool_stop_event)
                 result, report = run_task_call(runner, stop_event=self.tool_stop_event)
-                if report.exception is not None and not report.cancelled:
+                if (report.exception is not None and not report.cancelled
+                        and not isinstance(report.exception, ScreenshotUnavailable)):
                     raise report.exception
                 success = bool(getattr(result, "completed", result)) or report.cancelled
                 if not success:
                     failure_reason = report.reason or '执行失败'
-                    self.append_tool_log("ERROR", f"{TOOL_LABELS.get(tool_name, tool_name)}/{report.stage or '执行'}：{report.reason or '执行失败'}")
+                    log("ERROR", f"{TOOL_LABELS.get(tool_name, tool_name)}/{report.stage or '执行'}：{report.reason or '执行失败'}")
         except Exception as exc:
             failure_stage = "exception"
             if self.tool_stop_event.is_set():
                 success = True
             else:
                 failure_reason = str(exc)
-                self.append_tool_log(
+                log(
                     "ERROR",
                     f"{TOOL_LABELS.get(tool_name, tool_name)}/{report.stage or '初始化'}发生异常：{exc}",
                 )
@@ -665,7 +706,7 @@ class ToolsPageMixin:
                         **({"frame": report.frame} if report.frame is not None else {}),
                     )
                 except Exception as exc:
-                    self.append_tool_log("ERROR", f"报错截图保存失败：{exc}")
+                    log("ERROR", f"报错截图保存失败：{exc}")
             if previous_interval is not None:
                 try:
                     from module import automation
@@ -718,6 +759,8 @@ class ToolsPageMixin:
         self.refresh_button.disabled = False
         self.secret_attempts_field.disabled = False
         self.market_refresh_count_field.disabled = False
+        if tool_name == "rokudo":
+            self.rokudo_max_runs.disabled = False
         self._set_baigui_controls_disabled(False)
         self._set_super_oni_controls_disabled(False)
         if tool_name == "super_oni":
@@ -728,11 +771,16 @@ class ToolsPageMixin:
         if stopped and success:
             self.tool_status.value = "已安全停止"
             self.tool_status.color = COLORS["done"]
-            self._append_tool_log_now("SUCCESS", f"{label}已安全停止")
+            if tool_name != "rokudo":
+                self._append_tool_log_now("SUCCESS", f"{label}已安全停止")
         elif success:
-            self.tool_status.value = "已刷满 50/50，已返回觉醒一层" if tool_name == "super_oni" else "运行结束"
+            self.tool_status.value = {
+                "super_oni": "已刷满 50/50，已返回觉醒一层",
+                "rokudo": "已达到最多通关次数，已返回开启页",
+            }.get(tool_name, "运行结束")
             self.tool_status.color = COLORS["done"]
-            self._append_tool_log_now("SUCCESS", f"{label}运行结束")
+            if tool_name != "rokudo":
+                self._append_tool_log_now("SUCCESS", f"{label}运行结束")
         else:
             self.tool_status.value = "执行失败" + (f"：{reason}" if reason else "")
             self.tool_status.color = COLORS["error"]

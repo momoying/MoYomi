@@ -12,7 +12,7 @@ from controller.constants import *
 from controller.state_store import heart_team_role
 from controller.types import ControllerServices, TaskResult
 from module.diagnostics import capture_error_screenshot, configure_error_screenshots
-from module.task_execution import run_task_call
+from module.task_execution import ScreenshotUnavailable, run_task_call
 
 
 def _load_module(name: str, path: Path):
@@ -222,9 +222,16 @@ def _invoke_task_runner(
         kwargs = dict(cross_region_only=True)
 
     raw_result, report = run_task_call(runner, stop_event=stop_event, finish_current=True, **kwargs)
+    failure_kind = None
+    if report.cancelled:
+        failure_kind = "cancelled"
+    elif isinstance(report.exception, ScreenshotUnavailable):
+        failure_kind = "device"
+    elif report.exception is not None:
+        failure_kind = "exception"
     details = TaskResult(
         completed=False, stage=report.stage, reason=report.reason, frame=report.frame,
-        failure_kind="cancelled" if report.cancelled else "exception" if report.exception else None,
+        failure_kind=failure_kind,
     )
     if report.exception is not None or (report.cancelled and not raw_result):
         return details

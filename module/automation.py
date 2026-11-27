@@ -11,7 +11,8 @@ from pathlib import Path
 import cv2
 import numpy as np
 
-from module.task_execution import check_stopped, record_frame
+from module.mumu import discover_running_mumu_instances, resolve_mumu_manager_path
+from module.task_execution import ScreenshotUnavailable, check_stopped, in_task_call, record_frame
 
 _NATIVE_OUTPUT_LOCK = threading.RLock()
 
@@ -138,7 +139,7 @@ def _invalidate_adb_connection():
     _adb_connected_key = None
 
 
-def connect_to_mumu(force=False):
+def connect_to_mumu(force=False, *, command_timeout=8, attempts=3):
     """连接当前 MuMu ADB；同一目标成功连接后直接复用。
 
     各任务仍可独立调用本函数，方便单文件运行。中控模式下所有任务共享
@@ -154,12 +155,12 @@ def connect_to_mumu(force=False):
         "capture_output": True,
         "encoding": "utf-8",
         "errors": "replace",
-        "timeout": 8,
+        "timeout": command_timeout,
         "creationflags": subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
     }
     last_error = "设备未就绪"
     offline_reset = False
-    for attempt in range(3):
+    for attempt in range(attempts):
         if attempt:
             time.sleep(0.5)
         try:
@@ -466,17 +467,23 @@ def configure_mumu_target(address: str, instance_index="auto") -> bool:
     if not target_index:
         target_index = "auto"
 
-    changed = (
-        target_address != adb_port
-        or str(config.get("mumu_index", "auto")) != target_index
-    )
+    _invalidate_adb_connection()
+    reset_screenshot_backend()
+    manager = resolve_mumu_manager_path(config["mumu_path"])
+    if manager.is_file():
+        instances = discover_running_mumu_instances(manager)
+        if instances is None:
+            raise OSError("无法读取 MuMu 运行实例，请检查模拟器后重试")
+        explicit_index = target_index.lower() not in {"auto", "none", "null"}
+        target = next((item for item in instances if item["adb_port"] == target_address), None)
+        if target is None or (explicit_index and target["index"] != target_index):
+            raise OSError(f"MuMu 实例 {target_index} 与地址 {target_address} 的绑定已失效，请重新选择运行实例")
+        target_index = target["index"]
+
     adb_port = target_address
     config["adb_port"] = target_address
     config["mumu_index"] = target_index
-    if changed:
-        _invalidate_adb_connection()
-        reset_screenshot_backend()
-    return connect_to_mumu(force=changed)
+    return connect_to_mumu(force=True, command_timeout=2, attempts=2)
 
 
 def _get_mumu_capture():
@@ -515,20 +522,20 @@ def _get_mumu_capture():
         raise
 
 
-def _take_screenshot_by_adb() -> np.ndarray | None:
+def _take_screenshot_by_adb(*, attempts=2, timeout=12) -> np.ndarray | None:
     """
     ADB 兜底截图。直接从 screencap 的 PNG 数据流解码成 OpenCV BGR 图像，不写入磁盘。
     失败时重连并重试一次。
     """
     cmd = [adb_path, "-s", adb_port, "exec-out", "screencap", "-p"]
 
-    for attempt in range(2):
+    for attempt in range(attempts):
         try:
             result = subprocess.run(
                 cmd,
                 capture_output=True,
                 check=True,
-                timeout=12,
+                timeout=timeout,
             )
 
             if result.stdout:
@@ -551,12 +558,35 @@ def _take_screenshot_by_adb() -> np.ndarray | None:
         except Exception as e:
             print(f"ADB截图发生未知错误：{e}")
 
-        if attempt == 0:
+        if attempt + 1 < attempts:
             print("尝试重新连接 MuMu ADB...")
             _invalidate_adb_connection()
             connect_to_mumu(force=True)
 
     return None
+
+
+def _capture_frame(method, *, managed) -> np.ndarray | None:
+    global _mumu_capture, _mumu_capture_error
+
+    if method in {"auto", "mumu"}:
+        try:
+            return _get_mumu_capture().capture_frame()
+        except Exception as exc:
+            print(f"MuMu快速截图失败：{exc}")
+            if _mumu_capture is not None:
+                try:
+                    _mumu_capture.close()
+                except Exception:
+                    pass
+                _mumu_capture = None
+            _mumu_capture_error = None
+            if method == "mumu":
+                return None
+
+    if managed:
+        return _take_screenshot_by_adb(attempts=1, timeout=2)
+    return _take_screenshot_by_adb()
 
 
 def take_screenshot() -> np.ndarray | None:
@@ -566,7 +596,7 @@ def take_screenshot() -> np.ndarray | None:
       3. screenshot_method=adb ：只使用 ADB
     如需保存截图，请调用 save_screenshot(output_path)。
     """
-    global _mumu_capture, _mumu_capture_error, _last_screenshot_time, _latest_screenshot_frame
+    global _last_screenshot_time, _latest_screenshot_frame
 
     check_stopped()
 
@@ -583,39 +613,25 @@ def take_screenshot() -> np.ndarray | None:
     if method not in {"auto", "mumu", "adb"}:
         method = "auto"
 
-    frame = None
-
-    if method in {"auto", "mumu"}:
-        try:
-            cap = _get_mumu_capture()
-            frame = cap.capture_frame()
+    managed = in_task_call()
+    attempts = 3 if managed else 1
+    for attempt in range(attempts):
+        check_stopped()
+        frame = _capture_frame(method, managed=managed)
+        check_stopped()
+        if frame is not None:
             _last_screenshot_time = time.perf_counter()
             _latest_screenshot_frame = frame
             record_frame(frame)
             return frame
-
-        except Exception as e:
-            print(f"MuMu快速截图失败：{e}")
-            # 截图过程中失败时，清空缓存，下次重新初始化
-            if _mumu_capture is not None:
-                try:
-                    _mumu_capture.close()
-                except Exception:
-                    pass
-                _mumu_capture = None
-            # 不永久缓存失败状态，避免 MuMu 重启/切换实例后一直不重试
-            _mumu_capture_error = None
-            # mumu 模式不回退
-            if method == "mumu":
-                return None
-
-    frame = _take_screenshot_by_adb()
-    if frame is not None:
-        _last_screenshot_time = time.perf_counter()
-        _latest_screenshot_frame = frame
-        record_frame(frame)
-
-    return frame
+        if attempt + 1 < attempts:
+            time.sleep(.25)
+    if managed:
+        _invalidate_adb_connection()
+        raise ScreenshotUnavailable(
+            f"MuMu 实例 {_get_mumu_index()}（{adb_port}）连续 {attempts} 次无法截图，请检查实例是否正在运行"
+        )
+    return None
 
 
 def get_last_screenshot() -> np.ndarray | None:

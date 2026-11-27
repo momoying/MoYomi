@@ -24,7 +24,7 @@ from controller.types import ControllerServices, TaskWork, WorkItem
 from ui_app.components import AccountCardView
 from ui_app.pages.daily import DailyPageMixin
 from module.logging import TaskLogger
-from module.task_execution import record_frame
+from module.task_execution import ScreenshotUnavailable, record_frame
 from tasks.Mail import mail
 from tasks.Account import sign
 from tasks.CoopReward import coop_reward as coop
@@ -138,6 +138,35 @@ class ControllerExecutionTests(unittest.TestCase):
         self.assertIsNotNone(state_store.task_record_time(self.saved_system(), MAIL_TASK))
         self.screenshots.assert_called_once_with(MAIL_TASK, "exception", attempt=1)
         self.assertIn("task_retried", [event["type"] for event in self.events])
+
+    def test_capture_failure_reports_without_scene_recovery_or_task_retry(self):
+        runner = Mock(side_effect=ScreenshotUnavailable("模拟器截图失败"))
+        self.services.task_runners[MAIL_TASK] = runner
+        self.services.task_timeout_recovery = Mock(return_value=True)
+
+        self.assertFalse(self.run_daily([TaskWork(MAIL_TASK, 1)]))
+        runner.assert_called_once()
+        self.services.task_timeout_recovery.assert_not_called()
+        self.assertIsNone(state_store.task_record_time(self.saved_system(), MAIL_TASK))
+        self.assertIn("模拟器截图失败", self.events[-1]["message"])
+
+    def test_capture_failure_after_recorded_final_battle_keeps_completion(self):
+        for task, args in ((COOP_REWARD_TASK, ()), (HEART_TEAM_TASK, (1, 1))):
+            with self.subTest(task=task):
+                self.reset_state()
+
+                def runner(**kwargs):
+                    kwargs["on_battle_completed"](*args)
+                    raise ScreenshotUnavailable("模拟器截图失败")
+
+                self.services.task_runners[task] = runner
+                recovery = Mock(return_value=True)
+                self.services.task_timeout_recovery = recovery
+                self.services.task_completion_recoveries[task] = recovery
+                self.assertFalse(self.run_daily([TaskWork(task, 1)]))
+                recovery.assert_not_called()
+                self.assertIsNotNone(state_store.task_record_time(self.saved_system(), task))
+                self.assertIn("模拟器截图失败", self.events[-1]["message"])
 
     def test_exhausted_retry_never_saves_completion_or_starts_next_task(self):
         failed = Mock(return_value=False)

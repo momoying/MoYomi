@@ -922,6 +922,7 @@ class DailyPageMixin:
         if self.tool_running:
             self.append_log("ERROR", "小工具正在运行，不能同时启动一键长草")
             return
+        self.refresh_mumu_instances()
         if not self.save_settings():
             self._show_section("settings")
             return

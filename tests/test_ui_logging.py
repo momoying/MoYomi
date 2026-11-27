@@ -61,6 +61,23 @@ class UiLogPumpTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertIn(("INFO", "still visible"), dashboard.rendered_logs)
 
+    async def test_rokudo_click_uses_standard_log_prefix_and_chinese_template(self) -> None:
+        dashboard = _dashboard_harness()
+        del dashboard._append_tool_log_now
+        dashboard.settings = {}
+        dashboard.tool_log_sequence = 0
+        dashboard.tool_log_view = SimpleNamespace(controls=[])
+        dashboard.rokudo_log_view = SimpleNamespace(controls=[])
+        dashboard.ui_queue.put(("rokudo_click", ("normal_small", (1040, 361))))
+
+        await self._run_pump_briefly(dashboard)
+
+        [line] = dashboard.rokudo_log_view.controls
+        self.assertRegex(
+            line.value, r"^\d{2}:\d{2}:\d{2} \[INFO\] \[六道之门\] 模板 鏖战岛，点击位置 \(1040, 361\)$",
+        )
+        self.assertEqual(dashboard.tool_log_view.controls, [])
+
     async def test_page_update_failure_does_not_stop_pump(self) -> None:
         dashboard = _dashboard_harness(fail_first_update=True)
         dashboard._apply_controller_event = lambda payload: None

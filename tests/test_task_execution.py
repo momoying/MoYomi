@@ -12,13 +12,40 @@ import numpy as np
 from module import automation, recovery, startup
 from module.base.device import TaskDevice
 from module.logging import TaskLogger
-from module.task_execution import current_stage, record_frame, run_task_call
+from module.task_execution import ScreenshotUnavailable, current_stage, record_frame, run_task_call
 from controller import task_services
 from ui_app.pages.tools import ToolsPageMixin
 from ui_app.settings_store import DEFAULT_SETTINGS
 
 
 class ExecutionReportTests(unittest.TestCase):
+    def test_shared_capture_stops_task_after_three_failed_attempts(self):
+        backend = automation.create_session()
+        backend.config.update(screenshot_method="adb", screenshot_speed=0)
+        with (
+            patch.object(backend, "_take_screenshot_by_adb", return_value=None) as capture,
+            patch.object(backend.time, "sleep"),
+        ):
+            _, report = run_task_call(TaskDevice(backend).screenshot)
+        self.assertIsInstance(report.exception, ScreenshotUnavailable)
+        self.assertIn("连续 3 次无法截图", report.reason)
+        self.assertEqual(capture.call_count, 3)
+        self.assertTrue(all(call.kwargs == {"attempts": 1, "timeout": 2} for call in capture.call_args_list))
+
+    def test_shared_capture_recovers_from_transient_failure(self):
+        backend = automation.create_session()
+        backend.config.update(screenshot_method="mumu", screenshot_speed=0)
+        frame = np.ones((2, 2, 3), dtype=np.uint8)
+        with (
+            patch.object(backend, "_capture_frame", side_effect=[None, None, frame]) as capture,
+            patch.object(backend.time, "sleep"),
+        ):
+            result, report = run_task_call(TaskDevice(backend).screenshot)
+        self.assertIs(result, frame)
+        self.assertIs(report.frame, frame)
+        self.assertIsNone(report.exception)
+        self.assertEqual(capture.call_count, 3)
+
     def test_stage_and_reason_are_reported_without_parsing_rendered_logs(self):
         logger = TaskLogger("领取邮件")
         frame = object()

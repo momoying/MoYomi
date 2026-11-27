@@ -457,11 +457,17 @@ def _execute_task(
                 failure_message = f"{label}发生异常: {exc}"
                 failure_stage = "exception"
 
-            if coop_battle_recorded and not outcome.completed:
+            if (coop_battle_recorded and not outcome.completed
+                    and (outcome.failure_kind != "device" or run_index == run_count)):
                 outcome = replace(
                     outcome, completed=True, result=COOP_BATTLE_COMPLETED_RECOVERY_REQUIRED,
                     recovery_reason="本场协战已结算并保存，但收尾未完成",
                 )
+            if outcome.failure_kind == "device" and heart_progress_callback is not None:
+                completed, target = battle_progress(system_state, HEART_TEAM_TASK, now_provider())
+                if target and completed >= target:
+                    outcome = replace(outcome, completed=True, result=HEART_TEAM_BATTLES_COMPLETED_CLEANUP_FAILED,
+                                      recovery_reason=outcome.reason)
 
             if not outcome.completed and (outcome.failure_kind == "cancelled" or (stop_event is not None and stop_event.is_set())):
                 _emit_event(event_callback, "controller_stopped")
@@ -540,6 +546,8 @@ def _execute_task(
                 task_name,
                 services.task_timeout_recovery,
             )
+            if outcome.failure_kind == "device":
+                failure_recovery = None
             can_recover = (
                 attempt_index <= services.task_recovery_retries
                 and failure_recovery is not None
@@ -711,10 +719,12 @@ def _recover_completed_task(
     account_name, system = work_item.account_name, work_item.system
     label = TASK_LABELS[task_name]
     cleanup_failure = outcome.recovery_reason
-    if cleanup_failure is not None and outcome.stage:
-        cleanup_failure = f"{outcome.stage}：{outcome.reason or cleanup_failure}"
+    if cleanup_failure is not None and (outcome.stage or outcome.failure_kind == "device"):
+        cleanup_failure = outcome.reason or cleanup_failure
+        if outcome.stage:
+            cleanup_failure = f"{outcome.stage}：{cleanup_failure}"
     if cleanup_failure is not None:
-        if task_name == HEART_TEAM_TASK:
+        if task_name == HEART_TEAM_TASK or outcome.failure_kind == "device":
             message = f"{cleanup_failure}；已保存战斗进度和完成时间，停止后续任务"
             print(f"[ERROR] {message}")
             _emit_event(

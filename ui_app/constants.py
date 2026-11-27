@@ -19,6 +19,7 @@ TOOL_MODULE_PATHS = {
     "secret_battle": TOOLS_DIR / "SecretBattle" / "secret_battle.py",
     "market_sniper": TOOLS_DIR / "MarketSniper" / "market_sniper.py",
     "super_oni": TOOLS_DIR / "SuperOni" / "super_oni.py",
+    "rokudo": TOOLS_DIR / "RokuDo" / "rokudo.py",
     "baigui": TOOLS_DIR / "Baigui" / "baigui.py",
 }
 
@@ -27,11 +28,13 @@ TOOL_LABELS = {
     "secret_battle": "一键秘闻",
     "market_sniper": "抢商品",
     "super_oni": "超鬼王刷票",
+    "rokudo": "六道之门",
     # 百鬼棋局仍在完善，始终保留在工具栏最右侧；新工具放在它前面。
     "baigui": "百鬼棋局",
 }
 
 TOOL_DESCRIPTIONS = {
+    "rokudo": "自动通关茨木路线。可从开启页、继续页或路线内启动。",
     "super_oni": "从觉醒一层界面启动，自动锁定阵容，按各实例选择设置觉醒加成；达到 50/50 后关闭使用的加成，返回觉醒一层停止。",
     "baigui": "操作当前账号，每次完成一局。六级金鱼姬（荒川）阵容，正常保留50金币，升至8阶再刷新；低于30血不留本金。",
     "story_skip": (

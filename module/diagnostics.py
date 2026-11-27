@@ -77,13 +77,13 @@ class ErrorScreenshotManager:
                 self._warn(f"无法删除旧报错截图 {path.name}：{exc}")
         return removed
 
-    def _latest_frame(self):
+    def _latest_frame(self, capture_if_missing):
         try:
             frame = self.backend.get_last_screenshot()
         except Exception as exc:
             self._warn(f"无法读取最近截图缓存：{exc}")
             frame = None
-        if frame is not None:
+        if frame is not None or not capture_if_missing:
             return frame
         try:
             return self.backend.take_screenshot()
@@ -93,10 +93,11 @@ class ErrorScreenshotManager:
 
     def save(
         self, task: str, stage: str, *, attempt: int = 1, frame=None,
-        keep_count: Optional[int] = None,
+        keep_count: Optional[int] = None, capture_if_missing: bool = True,
     ) -> Optional[str]:
         with _SAVE_LOCK:
-            return self._save(task, stage, attempt=attempt, frame=frame, keep_count=keep_count)
+            return self._save(task, stage, attempt=attempt, frame=frame, keep_count=keep_count,
+                              capture_if_missing=capture_if_missing)
 
     def _save(
         self,
@@ -105,7 +106,7 @@ class ErrorScreenshotManager:
         *,
         attempt: int = 1,
         frame=None,
-        keep_count: Optional[int] = None,
+        keep_count: Optional[int] = None, capture_if_missing: bool = True,
     ) -> Optional[str]:
         """保存一张错误现场；显式帧为空时优先使用最近缓存帧。"""
         keep = self.keep_count if keep_count is None else max(0, int(keep_count))
@@ -113,7 +114,7 @@ class ErrorScreenshotManager:
             self.prune(0)
             return None
 
-        current_frame = frame if frame is not None else self._latest_frame()
+        current_frame = frame if frame is not None else self._latest_frame(capture_if_missing)
         if current_frame is None:
             self._warn("无法取得游戏画面，未保存报错截图")
             return None
@@ -165,4 +166,5 @@ def capture_error_screenshot(
         attempt=attempt,
         frame=frame,
         keep_count=keep_count,
+        capture_if_missing=False,
     )
