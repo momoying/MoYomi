@@ -10,8 +10,8 @@ from unittest.mock import Mock, patch
 
 import requests
 
-from controller import daily_runner, state_store
-from controller.constants import BOUNTY_TASK, STATUS_VERSION
+from controller import daily_runner, scheduler, state_store
+from controller.constants import BOUNTY_TASK, CROSS_REGION, MERCHANT_STOP_RESULT, MERCHANT_TASK, SAME_REGION, STATUS_VERSION
 from module import notifications as notify
 
 
@@ -54,6 +54,20 @@ class NotificationTests(unittest.TestCase):
         body = notify.build_detection_summary(self.state, NOW)[2]
         for text in ("同区 6 / 跨区 6，合计 12", "普通勾协：1", "现世勾协：1", "无勾协：10"):
             self.assertIn(text, body)
+
+    def test_merchant_summary_includes_cross_region_fifty_after_global_skip(self):
+        now = NOW + timedelta(days=1)
+        role = state_store._empty_system_state()
+        role["cross_region_enabled"] = True
+        role["cross_region_task_enabled"][MERCHANT_TASK] = True
+        state = {"accounts": {"0": {"systems": {"IOS": role}}}}
+        for region in (SAME_REGION, CROSS_REGION):
+            state_store.record_task_completion(BOUNTY_TASK, role, now, region=region)
+            state_store.set_task_record_result(role, BOUNTY_TASK, "no_magatama_collaboration", region=region)
+        scheduler.set_manual_detection_result(state, "0", "IOS", MERCHANT_TASK, MERCHANT_STOP_RESULT,
+                                              now, region=CROSS_REGION)
+
+        self.assertIn("- 50 蓝票：有", notify.build_detection_summary(state, now)[2])
 
     def test_nine_completed_roles_do_not_produce_an_incomplete_summary(self):
         for account in self.state["accounts"].values():

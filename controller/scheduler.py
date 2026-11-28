@@ -386,44 +386,51 @@ def task_runs_due(
     return 1 if task_is_due(task_name, system_state, now, region=region) else 0
 
 
-def mark_remaining_merchant_tasks_skipped(
-    state: dict[str, Any],
-    completed_at: datetime,
-    region: str = SAME_REGION,
-) -> int:
-    """发现 50 蓝票后，将本周期仍到期的奸商任务统一标记为跳过。"""
-    skipped_count = 0
+def _all_merchant_regions(state: dict[str, Any]):
     for account_state in state["accounts"].values():
         for system_state in account_state["systems"].values():
-            if region == CROSS_REGION:
-                if not cross_region_is_enabled(system_state) or not cross_region_task_is_enabled(system_state, MERCHANT_TASK):
-                    continue
-                system_state = cross_region_task_state(system_state, MERCHANT_TASK)
-            if not task_is_enabled(system_state, MERCHANT_TASK):
-                continue
-            if not task_is_due(MERCHANT_TASK, system_state, completed_at):
-                # 已检测过的 50/60/70/80/90 结果保持不变。
-                continue
-            record_task_completion(MERCHANT_TASK, system_state, completed_at)
-            set_task_record_result(
-                system_state,
-                MERCHANT_TASK,
-                MERCHANT_SKIPPED_RESULT,
-            )
-            skipped_count += 1
+            for region in VALID_REGIONS:
+                yield system_state, region
+
+
+def mark_remaining_merchant_tasks_skipped(state: dict[str, Any], completed_at: datetime) -> int:
+    """发现 50 蓝票后，跳过所有区服本周期仍到期的奸商检测。"""
+    skipped_count = 0
+    for system_state, region in _all_merchant_regions(state):
+        if region == CROSS_REGION:
+            enabled = cross_region_is_enabled(system_state) and cross_region_task_is_enabled(system_state, MERCHANT_TASK)
+        else:
+            enabled = task_is_enabled(system_state, MERCHANT_TASK)
+        if not enabled or not task_is_due(MERCHANT_TASK, system_state, completed_at, region=region):
+            continue
+        record_task_completion(MERCHANT_TASK, system_state, completed_at, region=region)
+        set_task_record_result(system_state, MERCHANT_TASK, MERCHANT_SKIPPED_RESULT, region)
+        skipped_count += 1
     return skipped_count
 
 
 def merchant_task_was_globally_skipped(
     system_state: dict[str, Any],
     now: datetime,
+    *,
+    region: str = SAME_REGION,
 ) -> bool:
     """只在写入跳过标记的同一刷新周期跳过；下个周三/周六会重新到期。"""
     return (
-        task_record_result(system_state, MERCHANT_TASK)
+        task_record_result(system_state, MERCHANT_TASK, region)
         == MERCHANT_SKIPPED_RESULT
-        and not task_is_due(MERCHANT_TASK, system_state, now)
+        and not task_is_due(MERCHANT_TASK, system_state, now, region=region)
     )
+
+
+def _clear_detection_result(system_state: dict[str, Any], task_name: str, region: str) -> None:
+    set_task_record_result(system_state, task_name, None, region)
+    if task_name == BOUNTY_TASK:
+        record = system_state[task_name][REGION_STATE_KEYS[region]]
+    else:
+        target = cross_region_task_state(system_state, task_name) if region == CROSS_REGION else system_state
+        record = target[task_name]
+    record["time"] = None
 
 
 def set_manual_detection_result(
@@ -446,19 +453,13 @@ def set_manual_detection_result(
         and (result not in allowed[task_name] or result == MERCHANT_SKIPPED_RESULT)
     ):
         raise ValueError("不支持的检测结果")
-    if region not in VALID_REGIONS or (task_name == MERCHANT_TASK and region != SAME_REGION):
+    if region not in VALID_REGIONS:
         raise ValueError("不支持的检测区服")
 
     system_state = state["accounts"][account]["systems"][system]
     previous_result = task_record_result(system_state, task_name, region)
     if result is None:
-        set_task_record_result(system_state, task_name, None, region)
-        record = (
-            system_state[task_name][REGION_STATE_KEYS[region]]
-            if task_name == BOUNTY_TASK
-            else system_state[task_name]
-        )
-        record["time"] = None
+        _clear_detection_result(system_state, task_name, region)
     else:
         record_task_completion(task_name, system_state, now, region=region)
         set_task_record_result(system_state, task_name, result, region)
@@ -468,20 +469,14 @@ def set_manual_detection_result(
     if result == MERCHANT_STOP_RESULT:
         mark_remaining_merchant_tasks_skipped(state, now)
     elif previous_result == MERCHANT_STOP_RESULT:
-        all_systems = [
-            item
-            for account_state in state["accounts"].values()
-            for item in account_state["systems"].values()
-        ]
         if not any(
-            task_record_result(item, MERCHANT_TASK) == MERCHANT_STOP_RESULT
-            and not task_is_due(MERCHANT_TASK, item, now)
-            for item in all_systems
+            task_record_result(item, MERCHANT_TASK, target_region) == MERCHANT_STOP_RESULT
+            and not task_is_due(MERCHANT_TASK, item, now, region=target_region)
+            for item, target_region in _all_merchant_regions(state)
         ):
-            for item in all_systems:
-                if merchant_task_was_globally_skipped(item, now):
-                    set_task_record_result(item, MERCHANT_TASK, None)
-                    item[MERCHANT_TASK]["time"] = None
+            for item, target_region in _all_merchant_regions(state):
+                if merchant_task_was_globally_skipped(item, now, region=target_region):
+                    _clear_detection_result(item, MERCHANT_TASK, target_region)
 
 
 def _ordered_due_tasks(

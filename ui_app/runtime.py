@@ -216,6 +216,8 @@ class UiRuntimeMixin:
                                 "INFO", f"模板 {label}，点击位置 ({x}, {y})",
                                 view=self.rokudo_log_view, source="六道之门",
                             )
+                        elif event_type == "rokudo_timing":
+                            self._apply_rokudo_timing(*payload)
                         elif event_type == "controller_event":
                             self._apply_controller_event(payload)
                         elif event_type == "worker_finished":

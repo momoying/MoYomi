@@ -78,6 +78,15 @@ class UiLogPumpTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(dashboard.tool_log_view.controls, [])
 
+    async def test_rokudo_timing_updates_the_panel(self) -> None:
+        dashboard = _dashboard_harness()
+        dashboard.rokudo_timing = SimpleNamespace(value="")
+        dashboard.ui_queue.put(("rokudo_timing", (62.8, 30.3, 2)))
+
+        await self._run_pump_briefly(dashboard)
+
+        self.assertEqual(dashboard.rokudo_timing.value, "上局用时 1 分 02 秒  ·  平均用时 30 秒（2 局）")
+
     async def test_page_update_failure_does_not_stop_pump(self) -> None:
         dashboard = _dashboard_harness(fail_first_update=True)
         dashboard._apply_controller_event = lambda payload: None

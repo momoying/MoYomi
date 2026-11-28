@@ -15,6 +15,9 @@ from ui_app.constants import *
 from ui_app.settings_store import *
 
 
+ROKUDO_TIMING_EMPTY = "上局用时 —  ·  平均用时 —"
+
+
 class ToolsPageMixin:
     def _build_super_oni_controls(self):
         self._super_oni_runs = {}
@@ -383,6 +386,7 @@ class ToolsPageMixin:
         self.super_oni_options_control.visible = tool_name == "super_oni"
         self.baigui_options_control.visible = tool_name == "baigui"
         self.rokudo_max_runs.visible = self.rokudo_log_view.visible = tool_name == "rokudo"
+        self.rokudo_timing.visible = tool_name == "rokudo"
         self.tool_log_view.visible = tool_name != "rokudo"
         self.tool_start_button.content = "全部启动" if tool_name == "super_oni" else "开始"
         self.tool_start_button.disabled = False
@@ -412,6 +416,7 @@ class ToolsPageMixin:
         self.rokudo_log_view = ft.ListView(
             expand=True, spacing=5, auto_scroll=True, padding=2, visible=False,
         )
+        self.rokudo_timing = ft.Text(ROKUDO_TIMING_EMPTY, size=13, color=COLORS["text"], visible=False)
         self.tool_title = ft.Text(
             TOOL_LABELS[self.active_tool],
             size=18,
@@ -430,6 +435,7 @@ class ToolsPageMixin:
                     self.market_refresh_count_control,
                     self._build_super_oni_controls(),
                     self.rokudo_max_runs,
+                    self.rokudo_timing,
                     self._build_baigui_controls(),
                     ft.Divider(height=8, color=COLORS["border"]),
                     ft.Row(
@@ -572,6 +578,7 @@ class ToolsPageMixin:
         if self.active_tool == "rokudo":
             self.rokudo_max_runs.disabled = True
             self.rokudo_log_view.controls.clear()
+            self.rokudo_timing.value = ROKUDO_TIMING_EMPTY
         else:
             self.append_tool_log("INFO", f"准备启动{TOOL_LABELS[self.active_tool]}")
 
@@ -671,6 +678,9 @@ class ToolsPageMixin:
                         max_runs=int(self.rokudo_max_runs.value),
                         stop_event=self.tool_stop_event,
                         click_callback=lambda template, point: self.ui_queue.put(("rokudo_click", (template, point))),
+                        timing_callback=lambda elapsed, average, count: self.ui_queue.put(
+                            ("rokudo_timing", (elapsed, average, count))
+                        ),
                     )
                 else:
                     runner = lambda: module.run(stop_event=self.tool_stop_event)
@@ -726,6 +736,14 @@ class ToolsPageMixin:
                     },
                 )
             )
+
+
+    def _apply_rokudo_timing(self, elapsed: float, average: float, count: int) -> None:
+        def duration(seconds: float) -> str:
+            minutes, remainder = divmod(int(seconds), 60)
+            return f"{minutes} 分 {remainder:02d} 秒" if minutes else f"{remainder} 秒"
+
+        self.rokudo_timing.value = f"上局用时 {duration(elapsed)}  ·  平均用时 {duration(average)}（{count} 局）"
 
 
     def _queue_secret_attempts(self, remaining: int) -> None:

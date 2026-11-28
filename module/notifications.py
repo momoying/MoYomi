@@ -234,15 +234,18 @@ def build_detection_summary(
         bounty_counts[result] += 1
 
     merchant_available = now.weekday() in {2, 5}
-    merchant_targets = (
-        [state for state in systems if _enabled(state, MERCHANT_TASK)]
-        if merchant_available
-        else []
-    )
+    merchant_records = []
+    if merchant_available:
+        for system_state in systems:
+            if _enabled(system_state, MERCHANT_TASK):
+                merchant_records.append(_record(system_state, MERCHANT_TASK))
+            if (system_state.get("cross_region_enabled") is True
+                    and system_state.get("cross_region_task_enabled", {}).get(MERCHANT_TASK) is True):
+                cross_state = system_state.get("cross_region_tasks")
+                merchant_records.append(_record(cross_state, MERCHANT_TASK) if isinstance(cross_state, dict) else {})
     merchant_results: list[str] = []
     day_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
-    for system_state in merchant_targets:
-        record = _record(system_state, MERCHANT_TASK)
+    for record in merchant_records:
         checked = _parse_time(record.get("time"), now)
         result = record.get("merchant_result")
         if checked is None or not day_start <= checked <= now or not isinstance(result, str):
@@ -257,7 +260,7 @@ def build_detection_summary(
         "",
         *(f"- {label}：{bounty_counts[key]}" for key, label in BOUNTY_RESULTS.items()),
     ]
-    if merchant_targets:
+    if merchant_records:
         lines.extend(["", "## 奸商检测"])
         for price in MERCHANT_PRICES:
             found = f"blue_ticket_{price}" in merchant_results

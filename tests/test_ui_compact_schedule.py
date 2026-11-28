@@ -141,7 +141,7 @@ class AccountCardResultTests(unittest.TestCase):
         self.assertEqual(len(page.important_results_chips.controls), 2)
         self.assertEqual(
             [chip.content.value for chip in page.important_results_chips.controls],
-            ["现世勾协", "发现50蓝票"],
+            ["现世勾协", "发现50蓝票（同）"],
         )
         self.assertTrue(
             all(
@@ -202,7 +202,7 @@ class AccountCardResultTests(unittest.TestCase):
         card = AccountCardView("角色一", "IOS", state, now)
 
         self.assertIn("现世勾协", card.important_result_labels())
-        self.assertIn("发现50蓝票", card.important_result_labels())
+        self.assertIn("发现50蓝票（同）", card.important_result_labels())
 
     def test_unknown_merchant_price_is_shown_on_compact_card(self):
         now = datetime(2026, 8, 12, 10, 0, tzinfo=TZ)
@@ -214,7 +214,76 @@ class AccountCardResultTests(unittest.TestCase):
 
         merchant_view = card.task_views[controller.MERCHANT_TASK]
         self.assertEqual(merchant_view.status, "done")
-        self.assertEqual(merchant_view.detail.value, "蓝票价格未知")
+        self.assertEqual(merchant_view.detail.value, "蓝票价格未知（同）")
+
+    def test_merchant_labels_keep_region_during_live_updates_and_after_rebuild(self):
+        now = datetime(2026, 8, 12, 10, 0, tzinfo=TZ)
+        state = state_store._empty_system_state()
+        task = controller.MERCHANT_TASK
+        state["cross_region_enabled"] = True
+        state["cross_region_task_enabled"][task] = True
+        card = AccountCardView("角色一", "IOS", state, now, single_task_name=task)
+        view = card.task_views[task]
+        page = DailyPageMixin()
+        page.cards = {("角色一", "IOS"): card}
+        page.task_mode = controller.DAILY_MODE
+        page.single_task_mode = False
+        page.show_important_only = True
+        page.hide_unavailable_tasks = SimpleNamespace(value=False)
+        page.summary_text = SimpleNamespace()
+        page.important_summary_text = SimpleNamespace()
+        page.important_results_chips = SimpleNamespace(controls=[])
+        page.important_filter_button = SimpleNamespace()
+
+        def complete(region, result):
+            state_store.record_task_completion(task, state, now, region=region)
+            state_store.set_task_record_result(state, task, result, region=region)
+            page._apply_controller_event({"type": "task_completed", "account": "角色一", "system": "IOS",
+                                          "task": task, "region": region, "result": result})
+
+        complete(controller.CROSS_REGION, "blue_ticket_50")
+        self.assertEqual(view.status, "pending")
+        self.assertEqual(view.detail.value, "50蓝票（跨）")
+        self.assertIsNotNone(view.tile.gradient)
+        self.assertTrue(card.control.visible)
+        self.assertEqual(card.important_result_labels(), ["发现50蓝票（跨）"])
+        self.assertEqual(page.important_results_chips.controls[0].bgcolor, COLORS["warning_bg"])
+
+        complete(controller.SAME_REGION, "blue_ticket_70")
+        self.assertEqual(view.status, "done")
+        self.assertEqual(view.detail.value, "70蓝票（同）\n50蓝票（跨）")
+        self.assertEqual(view.detail.max_lines, 2)
+        self.assertEqual(view.highlight_style, "merchant_50")
+        reloaded = AccountCardView("角色一", "IOS", state, now, single_task_name=task)
+        self.assertEqual(reloaded.task_views[task].detail.value, view.detail.value)
+        self.assertEqual(reloaded.important_result_labels(), ["发现70蓝票（同）", "发现50蓝票（跨）"])
+
+        complete(controller.SAME_REGION, "blue_ticket_50")
+        self.assertEqual(card.important_result_labels(), ["发现50蓝票（双）"])
+        state["task_enabled"][task] = False
+        cross_only = AccountCardView("角色一", "IOS", state, now, single_task_name=task)
+        self.assertEqual(cross_only.important_result_labels(), ["发现50蓝票（跨）"])
+
+    def test_merchant_labels_hide_negative_region_and_summarize_two_negatives(self):
+        now = datetime(2026, 8, 12, 10, 0, tzinfo=TZ)
+        state = state_store._empty_system_state()
+        task = controller.MERCHANT_TASK
+        state["cross_region_enabled"] = True
+        state["cross_region_task_enabled"][task] = True
+        for region in controller.VALID_REGIONS:
+            state_store.record_task_completion(task, state, now, region=region)
+            state_store.set_task_record_result(state, task, "no_blue_ticket", region=region)
+
+        card = AccountCardView("角色一", "IOS", state, now)
+        view = card.task_views[task]
+        self.assertEqual(view.detail.value, "无蓝票")
+        self.assertFalse(view.highlighted)
+        self.assertEqual(card.important_result_labels(), [])
+
+        card.set_merchant_result(controller.CROSS_REGION, "blue_ticket_70")
+        self.assertEqual(view.detail.value, "70蓝票（跨）")
+        self.assertEqual(view.highlight_style, "merchant_70")
+        self.assertEqual(card.important_result_labels(), ["发现70蓝票（跨）"])
 
 
 class OneShotAlarmTests(unittest.TestCase):

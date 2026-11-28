@@ -303,137 +303,85 @@ class DailyPageMixin:
                 on_click=lambda _event: choose(region, result),
             )
 
-        if task_name == controller.BOUNTY_TASK:
-            regions = []
-            if controller.task_is_enabled(system_state, task_name):
-                regions.append(controller.SAME_REGION)
-            if (controller.cross_region_is_enabled(system_state)
-                    and controller.cross_region_task_is_enabled(system_state, task_name)):
-                regions.append(controller.CROSS_REGION)
-            if not regions:
-                return
+        if task_name not in {controller.BOUNTY_TASK, controller.MERCHANT_TASK}:
+            return
+        if not controller.task_is_available(task_name, now):
+            return
+        regions = []
+        if controller.task_is_enabled(system_state, task_name):
+            regions.append(controller.SAME_REGION)
+        if (controller.cross_region_is_enabled(system_state)
+                and controller.cross_region_task_is_enabled(system_state, task_name)):
+            regions.append(controller.CROSS_REGION)
+        if not regions:
+            return
 
-            panels = []
-            for region in regions:
-                accent = "#93C5FD" if region == controller.SAME_REGION else "#C4B5FD"
-                selected_bg = "#203852" if region == controller.SAME_REGION else "#302849"
-                current = (
-                    controller.task_record_result(system_state, task_name, region)
-                    if not controller.task_is_due(task_name, system_state, now, region=region)
-                    else None
-                )
-                panels.append(
-                    ft.Container(
-                        width=240,
-                        padding=14,
-                        bgcolor=COLORS["panel_alt"],
-                        border=ft.Border.all(1, COLORS["border"]),
-                        border_radius=14,
-                        content=ft.Column(
-                            [
-                                ft.Text(
-                                    controller.REGION_LABELS[region],
-                                    size=14,
-                                    color=accent,
-                                    weight=ft.FontWeight.BOLD,
-                                ),
-                                *(
-                                    option(
-                                        label, region, result, current,
-                                        accent, selected_bg, 212,
-                                    )
-                                    for result, label in controller.BOUNTY_RESULT_DETAILS.items()
-                                ),
-                                ft.TextButton(
-                                    content="恢复待检测",
-                                    icon=ft.Icons.REPLAY_ROUNDED,
-                                    on_click=lambda _event, region=region: choose(region, None),
-                                ),
-                            ],
-                            spacing=8,
-                            tight=True,
-                        ),
-                    )
-                )
-            body: ft.Control = ft.Row(panels, spacing=12, tight=True)
-        elif task_name == controller.MERCHANT_TASK:
-            if not controller.task_is_enabled(
-                system_state, task_name
-            ) or not controller.task_is_available(task_name, now):
-                return
+        panels = []
+        for region in regions:
+            accent = "#93C5FD" if region == controller.SAME_REGION else "#C4B5FD"
+            selected_bg = "#203852" if region == controller.SAME_REGION else "#302849"
             current = (
-                controller.task_record_result(system_state, task_name)
-                if not controller.task_is_due(task_name, system_state, now)
+                controller.task_record_result(system_state, task_name, region)
+                if not controller.task_is_due(task_name, system_state, now, region=region)
                 else None
             )
-            prices = [
-                result
-                for result in controller.MERCHANT_RESULT_DETAILS
-                if result.startswith("blue_ticket_")
-            ]
-            body = ft.Container(
-                width=500,
-                padding=14,
-                bgcolor=COLORS["panel_alt"],
-                border=ft.Border.all(1, COLORS["border"]),
-                border_radius=14,
-                content=ft.Column(
+            if task_name == controller.MERCHANT_TASK:
+                prices = ft.Row(
                     [
-                        ft.Text(
-                            "蓝票价格",
-                            size=12,
-                            weight=ft.FontWeight.BOLD,
-                            color=COLORS["text"],
-                        ),
-                        ft.Row(
-                            [
-                                option(
-                                    result.rsplit("_", 1)[-1],
-                                    controller.SAME_REGION,
-                                    result, current,
-                                    (
-                                        "#F6C85F"
-                                        if result == controller.MERCHANT_STOP_RESULT
-                                        else "#93C5FD"
-                                    ),
-                                    (
-                                        COLORS["warning_bg"]
-                                        if result == controller.MERCHANT_STOP_RESULT
-                                        else COLORS["active_bg"]
-                                    ),
-                                    88,
-                                )
-                                for result in prices
-                            ],
-                            spacing=8,
-                            tight=True,
-                        ),
-                        ft.Row(
-                            [
-                                option(
-                                    label, controller.SAME_REGION, result, current,
-                                    "#93C5FD", COLORS["active_bg"], 230,
-                                )
-                                for result, label in (
-                                    ("no_blue_ticket", "没有蓝票"),
-                                    ("unknown_price", "蓝票价格未知"),
-                                )
-                            ],
-                            spacing=8,
-                            tight=True,
-                        ),
-                        ft.TextButton(
-                            content="恢复待检测",
-                            icon=ft.Icons.REPLAY_ROUNDED,
-                            on_click=lambda _event: choose(controller.SAME_REGION, None),
-                        ),
+                        option(
+                            f"{price.rsplit('_', 1)[-1]} 蓝票", region, price, current,
+                            COLORS["warning"] if price == controller.MERCHANT_STOP_RESULT else accent,
+                            COLORS["warning_bg"] if price == controller.MERCHANT_STOP_RESULT else selected_bg,
+                            100,
+                        )
+                        for price in controller.MERCHANT_RESULT_DETAILS
+                        if price.startswith("blue_ticket_")
                     ],
-                    spacing=10,
-                    tight=True,
-                ),
+                    wrap=True,
+                    spacing=8,
+                    run_spacing=8,
+                )
+                options = [
+                    prices,
+                    *(
+                        option(controller.MERCHANT_RESULT_DETAILS[result], region, result, current,
+                               accent, selected_bg, 212)
+                        for result in ("no_blue_ticket", "unknown_price")
+                    ),
+                ]
+            else:
+                options = [
+                    option(label, region, result, current, accent, selected_bg, 212)
+                    for result, label in controller.BOUNTY_RESULT_DETAILS.items()
+                ]
+            panels.append(
+                ft.Container(
+                    width=240,
+                    padding=14,
+                    bgcolor=COLORS["panel_alt"],
+                    border=ft.Border.all(1, COLORS["border"]),
+                    border_radius=14,
+                    content=ft.Column(
+                        [
+                            ft.Text(
+                                controller.REGION_LABELS[region],
+                                size=14,
+                                color=accent,
+                                weight=ft.FontWeight.BOLD,
+                            ),
+                            *options,
+                            ft.TextButton(
+                                content="恢复待检测",
+                                icon=ft.Icons.REPLAY_ROUNDED,
+                                on_click=lambda _event, region=region: choose(region, None),
+                            ),
+                        ],
+                        spacing=8,
+                        tight=True,
+                    ),
+                )
             )
-        else:
-            return
+        body = ft.Row(panels, spacing=12, tight=True, vertical_alignment=ft.CrossAxisAlignment.START)
 
         dialog = ft.AlertDialog(
             modal=False,
@@ -492,8 +440,7 @@ class DailyPageMixin:
             system_state = state["accounts"][account]["systems"][system]
             enabled = (
                 controller.cross_region_is_enabled(system_state) and controller.cross_region_task_is_enabled(system_state, task_name)
-                if task_name == controller.BOUNTY_TASK
-                and region == controller.CROSS_REGION
+                if region == controller.CROSS_REGION
                 else controller.task_is_enabled(system_state, task_name)
             )
             if not enabled:
@@ -516,14 +463,10 @@ class DailyPageMixin:
             if task_name == controller.BOUNTY_TASK
             else controller.MERCHANT_RESULT_DETAILS.get(result)
         ) or "恢复待检测"
-        region_label = (
-            f" · {controller.REGION_LABELS[region]}"
-            if task_name == controller.BOUNTY_TASK
-            else ""
-        )
+        region_label = controller.REGION_LABELS[region]
         self.append_log(
             "INFO",
-            f"{account} · {system}{region_label} · {controller.TASK_LABELS[task_name]}：{label}",
+            f"{account} · {system} · {region_label} · {controller.TASK_LABELS[task_name]}：{label}",
         )
         return True
 
@@ -568,18 +511,22 @@ class DailyPageMixin:
                 self, "important_results_chips"
             )
             if hasattr(self, "important_results_chips"):
+                warning_labels = {
+                    label for label in important_results
+                    if label.startswith(("现世勾", controller.MERCHANT_RESULT_DETAILS[controller.MERCHANT_STOP_RESULT]))
+                }
                 self.important_results_chips.controls = [
                     ft.Container(
                         padding=ft.Padding.symmetric(horizontal=11, vertical=6),
                         bgcolor=(
                             COLORS["warning_bg"]
-                            if label in {"现世勾协", "发现50蓝票"}
+                            if label in warning_labels
                             else COLORS["active_bg"]
                         ),
                         border=ft.Border.all(
                             1,
                             COLORS["warning"]
-                            if label in {"现世勾协", "发现50蓝票"}
+                            if label in warning_labels
                             else COLORS["active"],
                         ),
                         border_radius=8,
@@ -589,7 +536,7 @@ class DailyPageMixin:
                             weight=ft.FontWeight.W_600,
                             color=(
                                 COLORS["warning"]
-                                if label in {"现世勾协", "发现50蓝票"}
+                                if label in warning_labels
                                 else COLORS["text"]
                             ),
                         ),
@@ -1107,25 +1054,20 @@ class DailyPageMixin:
                 )
         elif event_type == "task_completed" and card is not None:
             task_name = event["task"]
-            warning = event.get("warning")
-            detail = warning or event.get("detail") or "本轮已完成"
-            if task_name == controller.COOP_REWARD_TASK and not warning and not event.get("detail"):
-                detail = "已完成"
-            card.task_views[task_name].set_status(
-                "warning" if warning else "done",
-                detail,
-            )
+            if task_name == controller.MERCHANT_TASK:
+                card.set_merchant_result(event.get("region", controller.SAME_REGION), event.get("result"))
+            else:
+                warning = event.get("warning")
+                default_detail = "已完成" if task_name == controller.COOP_REWARD_TASK else "本轮已完成"
+                card.task_views[task_name].set_status(
+                    "warning" if warning else "done",
+                    warning or event.get("detail") or default_detail,
+                )
             if task_name == controller.BOUNTY_TASK:
                 bounty_style = BOUNTY_HIGHLIGHT_STYLES.get(event.get("result"))
                 card.task_views[task_name].set_highlight(
                     bounty_style is not None,
                     bounty_style or "default",
-                )
-            elif task_name == controller.MERCHANT_TASK:
-                merchant_style = MERCHANT_HIGHLIGHT_STYLES.get(event.get("result"))
-                card.task_views[task_name].set_highlight(
-                    merchant_style is not None,
-                    merchant_style or "default",
                 )
             card.refresh_overall()
         elif event_type == "error":

@@ -176,8 +176,6 @@ def run(
         system = work_item.system
         region = work_item.region
         system_state = state["accounts"][account_name]["systems"][system]
-        if region == CROSS_REGION:
-            system_state = cross_region_task_state(system_state, MERCHANT_TASK)
         if stop_event is not None and stop_event.is_set():
             print("Daily 中控已安全停止")
             _emit_event(event_callback, "controller_stopped")
@@ -190,6 +188,7 @@ def run(
                 and merchant_task_was_globally_skipped(
                     system_state,
                     now_provider(),
+                    region=region,
                 )
             ):
                 detail = MERCHANT_RESULT_DETAILS[MERCHANT_SKIPPED_RESULT]
@@ -199,8 +198,9 @@ def run(
                     "task_completed",
                     account=account_name,
                     system=system,
+                    region=region,
                     task=MERCHANT_TASK,
-                    timestamp=task_record_time(system_state, MERCHANT_TASK),
+                    timestamp=task_record_time(system_state, MERCHANT_TASK, region),
                     detail=detail,
                     result=MERCHANT_SKIPPED_RESULT,
                     skipped=True,
@@ -669,16 +669,9 @@ def _save_task_result(
         set_task_record_result(system_state, MERCHANT_TASK, task_result, region=region)
         detail = MERCHANT_RESULT_DETAILS[task_result]
         if task_result == MERCHANT_STOP_RESULT:
-            skipped_count = mark_remaining_merchant_tasks_skipped(
-                state,
-                now_provider(),
-                region=region,
-            )
+            skipped_count = mark_remaining_merchant_tasks_skipped(state, now_provider())
             if skipped_count:
-                print(
-                    f"发现50蓝票，已将后续 {skipped_count} 个"
-                    "账号/系统的奸商检测标记为跳过"
-                )
+                print(f"发现50蓝票，已在所有区服合计跳过 {skipped_count} 项奸商检测")
     elif task_name == "liked" and region == CROSS_REGION:
         detail = "跨区好友 ×2 已点赞"
     elif task_name == HEART_TEAM_TASK:

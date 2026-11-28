@@ -102,10 +102,39 @@ class ManualDetectionTests(unittest.TestCase):
             )
         )
 
+    def test_cross_region_merchant_skip_and_reset_cover_all_regions(self):
+        state = state_with_accounts("甲", "乙", "丙")
+        task = controller.MERCHANT_TASK
+        cross = controller.CROSS_REGION
+        roles = {name: account["systems"]["IOS"] for name, account in state["accounts"].items()}
+        for role in roles.values():
+            role["cross_region_enabled"] = True
+            role["cross_region_task_enabled"][task] = True
+
+        controller.set_manual_detection_result(state, "丙", "IOS", task, "blue_ticket_70", NOW)
+        controller.set_manual_detection_result(state, "甲", "IOS", task, "blue_ticket_50", NOW, region=cross)
+        for region in controller.VALID_REGIONS:
+            self.assertEqual(controller.task_record_result(roles["乙"], task, region),
+                             controller.MERCHANT_SKIPPED_RESULT)
+        self.assertEqual(controller.task_record_result(roles["丙"], task), "blue_ticket_70")
+
+        controller.set_manual_detection_result(state, "乙", "IOS", task, "blue_ticket_50", NOW)
+        controller.set_manual_detection_result(state, "甲", "IOS", task, None, NOW, region=cross)
+        self.assertFalse(controller.task_is_due(task, roles["丙"], NOW, region=cross))
+        self.assertEqual(controller.task_record_result(roles["甲"], task), controller.MERCHANT_SKIPPED_RESULT)
+
+        controller.set_manual_detection_result(state, "乙", "IOS", task, "blue_ticket_60", NOW)
+        self.assertIsNone(controller.task_record_result(roles["甲"], task))
+        self.assertTrue(controller.task_is_due(task, roles["甲"], NOW))
+        self.assertEqual(controller.task_record_result(roles["丙"], task), "blue_ticket_70")
+        self.assertIsNone(controller.task_record_result(roles["丙"], task, cross))
+        self.assertTrue(controller.task_is_due(task, roles["丙"], NOW, region=cross))
+
     def test_dialog_choice_persists_and_reload_updates_card(self):
         state = state_with_accounts("角色一")
         role = state["accounts"]["角色一"]["systems"]["IOS"]
         role["cross_region_enabled"] = True
+        role["cross_region_task_enabled"][controller.MERCHANT_TASK] = True
         dashboard = DailyPageMixin()
         dashboard.running = False
         dashboard.task_mode = controller.DAILY_MODE
@@ -154,9 +183,18 @@ class ManualDetectionTests(unittest.TestCase):
                 dialog = dashboard.page.show_dialog.call_args.args[0]
                 self.assertFalse(dialog.modal)
                 self.assertEqual(dialog.actions, [])
-                price_row = dialog.content.content.controls[1]
+                self.assertEqual([panel.content.controls[0].value for panel in dialog.content.controls],
+                                 [controller.REGION_LABELS[region] for region in controller.VALID_REGIONS])
+                price_row = dialog.content.controls[0].content.controls[1]
                 self.assertEqual(len(price_row.controls), 5)
                 price_row.controls[0].on_click(None)  # 50 蓝票
+
+                merchant_tile.on_secondary_tap(None)
+                dialog = dashboard.page.show_dialog.call_args.args[0]
+                same, cross = dialog.content.controls
+                self.assertEqual(len(same.content.controls[1].controls[0].content.controls), 2)
+                self.assertEqual(len(cross.content.controls[1].controls[0].content.controls), 1)
+                cross.content.controls[1].controls[2].on_click(None)  # 跨区 70 蓝票
 
             loaded, _ = controller.load_state(path)
             saved_role = loaded["accounts"]["角色一"]["systems"]["IOS"]
@@ -172,9 +210,40 @@ class ManualDetectionTests(unittest.TestCase):
             )
             updated = AccountCardView("角色一", "IOS", saved_role, NOW)
             self.assertIn("现世勾（同）", updated.important_result_labels())
-            self.assertIn("发现50蓝票", updated.important_result_labels())
-            self.assertEqual(dashboard.refresh_cards.call_count, 3)
-            self.assertEqual(dashboard.page.pop_dialog.call_count, 3)
+            self.assertIn("发现50蓝票（同）", updated.important_result_labels())
+            self.assertIn("发现70蓝票（跨）", updated.important_result_labels())
+            self.assertEqual(dashboard.refresh_cards.call_count, 4)
+            self.assertEqual(dashboard.page.pop_dialog.call_count, 4)
+
+    def test_cross_only_merchant_shows_only_its_panel_and_reset_clears_its_record(self):
+        state = state_with_accounts("角色一")
+        role = state["accounts"]["角色一"]["systems"]["IOS"]
+        task = controller.MERCHANT_TASK
+        cross = controller.CROSS_REGION
+        role["task_enabled"][task] = False
+        role["cross_region_enabled"] = role["cross_region_task_enabled"][task] = True
+        controller.set_manual_detection_result(state, "角色一", "IOS", task, "blue_ticket_70", NOW, region=cross)
+        dashboard = DailyPageMixin()
+        dashboard.running = False
+        dashboard.task_mode = controller.DAILY_MODE
+        dashboard.refresh_cards = Mock()
+        dashboard.append_log = Mock()
+        dashboard.page = SimpleNamespace(show_dialog=Mock(), pop_dialog=Mock())
+
+        with (
+            patch.object(controller, "load_state", return_value=(state, False)),
+            patch.object(controller, "save_state") as save,
+            patch("ui_app.pages.daily.datetime") as fake_datetime,
+        ):
+            fake_datetime.now.return_value = NOW
+            dashboard._show_detection_dialog("角色一", "IOS", task)
+            [panel] = dashboard.page.show_dialog.call_args.args[0].content.controls
+            self.assertEqual(panel.content.controls[0].value, controller.REGION_LABELS[cross])
+            panel.content.controls[-1].on_click(None)
+
+        save.assert_called_once()
+        self.assertIsNone(controller.task_record_time(role, task, cross))
+        dashboard.page.pop_dialog.assert_called_once()
 
     def test_save_failure_does_not_refresh_cards(self):
         dashboard = SimpleNamespace(

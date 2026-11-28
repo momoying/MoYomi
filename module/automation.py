@@ -139,7 +139,7 @@ def _invalidate_adb_connection():
     _adb_connected_key = None
 
 
-def connect_to_mumu(force=False, *, command_timeout=8, attempts=3):
+def connect_to_mumu(force=False, *, command_timeout=8, connect_timeout=None, attempts=3):
     """连接当前 MuMu ADB；同一目标成功连接后直接复用。
 
     各任务仍可独立调用本函数，方便单文件运行。中控模式下所有任务共享
@@ -158,13 +158,14 @@ def connect_to_mumu(force=False, *, command_timeout=8, attempts=3):
         "timeout": command_timeout,
         "creationflags": subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
     }
+    connect_options = run_options | {"timeout": command_timeout if connect_timeout is None else connect_timeout}
     last_error = "设备未就绪"
     offline_reset = False
     for attempt in range(attempts):
         if attempt:
             time.sleep(0.5)
         try:
-            result = subprocess.run([adb_path, "connect", adb_port], **run_options)
+            result = subprocess.run([adb_path, "connect", adb_port], **connect_options)
             connect_message = (result.stderr or result.stdout).strip()
             if result.returncode != 0:
                 last_error = f"connect：{connect_message or result.returncode}"
@@ -483,7 +484,7 @@ def configure_mumu_target(address: str, instance_index="auto") -> bool:
     adb_port = target_address
     config["adb_port"] = target_address
     config["mumu_index"] = target_index
-    return connect_to_mumu(force=True, command_timeout=2, attempts=2)
+    return connect_to_mumu(force=True, command_timeout=2, connect_timeout=5, attempts=2)
 
 
 def _get_mumu_capture():

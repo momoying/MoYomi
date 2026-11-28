@@ -14,10 +14,14 @@ from controller.constants import (
     CONSIGNMENT_HOUSE_TASK,
     COOP_BATTLE_COMPLETED_RECOVERY_REQUIRED,
     COOP_REWARD_TASK,
+    CROSS_REGION,
     HEART_TEAM_BATTLES_COMPLETED_CLEANUP_FAILED,
     HEART_TEAM_TASK,
     MAIL_TASK,
+    MERCHANT_SKIPPED_RESULT,
+    MERCHANT_STOP_RESULT,
     MERCHANT_TASK,
+    SAME_REGION,
     STATUS_VERSION,
 )
 from controller.types import ControllerServices, TaskWork, WorkItem
@@ -138,6 +142,33 @@ class ControllerExecutionTests(unittest.TestCase):
         self.assertIsNotNone(state_store.task_record_time(self.saved_system(), MAIL_TASK))
         self.screenshots.assert_called_once_with(MAIL_TASK, "exception", attempt=1)
         self.assertIn("task_retried", [event["type"] for event in self.events])
+
+    def test_merchant_fifty_skips_the_other_region_already_in_queue(self):
+        for found_region, skipped_region in ((CROSS_REGION, SAME_REGION), (SAME_REGION, CROSS_REGION)):
+            with self.subTest(found_region=found_region):
+                self.reset_state()
+                self.events.clear()
+                state, _ = state_store.load_state(self.path)
+                role = state["accounts"]["account"]["systems"]["IOS"]
+                role["cross_region_enabled"] = True
+                role["cross_region_task_enabled"][MERCHANT_TASK] = True
+                state_store.save_state(state, self.path)
+                merchant = Mock(return_value=MERCHANT_STOP_RESULT)
+                self.services.task_runners[MERCHANT_TASK] = merchant
+                queue = [WorkItem("account", "IOS", (TaskWork(MERCHANT_TASK, 1),), region=region)
+                         for region in (found_region, skipped_region)]
+
+                with patch.object(daily_runner, "build_work_queue", return_value=queue):
+                    self.assertTrue(daily_runner.run(status_path=self.path, services=self.services,
+                                                     now_provider=lambda: NOW, event_callback=self.events.append))
+
+                merchant.assert_called_once()
+                [found, skipped] = [item for item in self.events if item["type"] == "task_completed"]
+                self.assertEqual((found["region"], found["result"]), (found_region, MERCHANT_STOP_RESULT))
+                self.assertEqual((skipped["region"], skipped["result"]), (skipped_region, MERCHANT_SKIPPED_RESULT))
+                self.assertTrue(skipped["skipped"])
+                result = state_store.task_record_result(self.saved_system(), MERCHANT_TASK, skipped_region)
+                self.assertEqual(result, MERCHANT_SKIPPED_RESULT)
 
     def test_capture_failure_reports_without_scene_recovery_or_task_retry(self):
         runner = Mock(side_effect=ScreenshotUnavailable("模拟器截图失败"))

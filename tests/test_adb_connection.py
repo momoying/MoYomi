@@ -31,6 +31,28 @@ class AdbConnectionTests(unittest.TestCase):
         self.assertEqual(self.run.call_count, 2)
         self.sleep.assert_not_called()
 
+    def test_binding_allows_slow_adb_startup_and_keeps_state_check_bounded(self):
+        address = "127.0.0.1:16384"
+
+        def adb_command(command, *, timeout, **_options):
+            if command[1] == "connect":
+                if timeout < 2.44:
+                    raise subprocess.TimeoutExpired(command, timeout)
+                return result("connected")
+            return result("device\n")
+
+        self.run.side_effect = adb_command
+        with (
+            patch.object(automation, "config", automation.config.copy()),
+            patch.object(automation, "reset_screenshot_backend"),
+            patch.object(automation, "discover_running_mumu_instances", return_value=[
+                {"adb_port": address, "index": "0"},
+            ]),
+        ):
+            self.assertTrue(automation.configure_mumu_target(address, "0"))
+        self.assertEqual([call.kwargs["timeout"] for call in self.run.call_args_list], [5, 2])
+        self.sleep.assert_not_called()
+
     def test_already_connected_but_offline_recovers_only_target(self):
         self.run.side_effect = [
             result("already connected"), result(stderr="error: device offline", code=1),

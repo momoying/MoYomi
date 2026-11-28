@@ -78,6 +78,7 @@ class RokuDoTests(TestCase):
             return page, node, rokudo.FIXED_CLICK_AREAS.get(page, (rect,)), template
 
         on_click = Mock()
+        timing = Mock()
         device = Mock()
         device.random_point.side_effect = [(5 + i, 5) for i in range(24)]
         waits = Mock()
@@ -85,14 +86,16 @@ class RokuDoTests(TestCase):
             patch.object(rokudo.automation, "connect_to_mumu", return_value=True),
             patch.object(rokudo, "DEVICE", device),
             patch.object(rokudo, "_wait_for_page", side_effect=next_page),
+            patch.object(rokudo.time, "monotonic", side_effect=[100.0, 160.0]),
             patch.object(rokudo, "_wait", waits),
             patch.object(rokudo.random, "choice", side_effect=lambda areas: areas[-1]),
             patch.object(rokudo.random, "uniform", return_value=.15),
         ):
-            self.assertTrue(rokudo.run(2, Event(), on_click))
+            self.assertTrue(rokudo.run(2, Event(), on_click, timing_callback=timing))
 
         self.assertEqual(device.click.call_count, 24)
         self.assertEqual(on_click.call_count, 24)
+        timing.assert_called_once_with(60.0, 60.0, 1)
         self.assertEqual(on_click.call_args_list[0].args, ("resume", device.click.call_args_list[0].args))
         self.assertEqual(on_click.call_args_list[1].args, ("chaos_node", device.click.call_args_list[1].args))
         self.assertEqual(on_click.call_args_list[10].args, ("start", device.click.call_args_list[10].args))
@@ -105,6 +108,33 @@ class RokuDoTests(TestCase):
         self.assertAlmostEqual(click_delays[20], .35)
         self.assertEqual(click_delays[8], .15)
         self.assertIsNone(next(pages, None))
+
+    def test_average_uses_only_completed_runs_started_at_the_opening_page(self):
+        full_run = (*rokudo.START_PAGES, "boss", "final_reward", "results")
+        for entry in ("start", "confirm", "lineup", "boss", "results"):
+            with self.subTest(entry=entry):
+                passes = iter((*full_run[full_run.index(entry):], *full_run, *full_run, "start"))
+                timing = Mock()
+                clock = [0.0, 100.0, 120.0, 160.0]
+                expected_timings = [(100.0, 100.0, 1), (40.0, 70.0, 2)]
+                if entry == "start":
+                    clock.extend((170.0, 210.0))
+                    expected_timings.append((40.0, 60.0, 3))
+
+                def next_page(expected, *_args, **_kwargs):
+                    page = next(passes)
+                    self.assertIn(page, expected)
+                    return page, None, (), page
+
+                with (
+                    patch.object(rokudo.automation, "connect_to_mumu", return_value=True),
+                    patch.object(rokudo, "_wait_for_page", side_effect=next_page),
+                    patch.object(rokudo, "_click_match", return_value=True),
+                    patch.object(rokudo, "_wait"),
+                    patch.object(rokudo.time, "monotonic", side_effect=clock),
+                ):
+                    self.assertTrue(rokudo.run(3, timing_callback=timing))
+                self.assertEqual([call.args for call in timing.call_args_list], expected_timings)
 
     def test_scaled_high_priority_island_clicks_only_matched_text(self):
         def place(frame, asset, x, y, scale=1, core=None):

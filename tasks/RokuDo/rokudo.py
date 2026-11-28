@@ -336,7 +336,7 @@ def _wait_for_page(expected, timeout, stop_event, *, previous=None, click_callba
     return None
 
 
-def run(max_runs, stop_event=None, click_callback=None):
+def run(max_runs, stop_event=None, click_callback=None, *, timing_callback=None):
     if type(max_runs) is not int or max_runs < 1:
         raise ValueError("最多通关次数必须为正整数")
     if stop_event is not None and stop_event.is_set():
@@ -346,6 +346,10 @@ def run(max_runs, stop_event=None, click_callback=None):
         return False
 
     completed = 0
+    opened_from_entry = False
+    started_at = None
+    timed_runs = 0
+    total_elapsed = 0.0
     expected = ENTRY_PAGES
     timeout = PAGE_TIMEOUT
     previous = None
@@ -361,6 +365,13 @@ def run(max_runs, stop_event=None, click_callback=None):
             page, node, _, _ = match
             if page == "start" and expected == ("start",):
                 completed += 1
+                if started_at is not None:
+                    elapsed = time.monotonic() - started_at
+                    started_at = None
+                    timed_runs += 1
+                    total_elapsed += elapsed
+                    if timing_callback is not None:
+                        timing_callback(elapsed, total_elapsed / timed_runs, timed_runs)
                 if completed == max_runs:
                     return True
             if node or page in PAGE_NODES:
@@ -376,6 +387,11 @@ def run(max_runs, stop_event=None, click_callback=None):
             _wait(click_delay, stop_event)
             if not _click_match(match, click_callback):
                 return False
+            if page == "start":
+                opened_from_entry = True
+            elif page == "lineup" and opened_from_entry:
+                started_at = time.monotonic()
+                opened_from_entry = False
             previous = match if page == "map" or page in REWARD_PAGES else None
             expected = NODE_PAGES[node] if page == "map" else NEXT_PAGES[page]
             timeout = PAGE_TIMEOUT

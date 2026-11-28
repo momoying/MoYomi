@@ -12,6 +12,9 @@ import main as controller
 from ui_app.constants import *
 
 
+MERCHANT_REGION_SUFFIX = {controller.SAME_REGION: "同", controller.CROSS_REGION: "跨"}
+
+
 class LineWriter(io.TextIOBase):
     """Convert controller/task print output into UI log lines."""
 
@@ -53,6 +56,8 @@ class AccountCardView:
         self.status = "pending"
         self.status_text = ft.Text(size=11, color=COLORS["muted"])
         self.task_views: dict[str, TaskStatusView] = {}
+        self.merchant_regions: tuple[str, ...] = ()
+        self.merchant_results: dict[str, str | None] = {}
 
         task_order = (
             (single_task_name,)
@@ -81,14 +86,19 @@ class AccountCardView:
             completed_warning = None
             if task_name == controller.BOUNTY_TASK:
                 completed_detail = controller.combined_bounty_detail(system_state)
-            elif task_name == controller.MERCHANT_TASK:
-                completed_detail = controller.MERCHANT_RESULT_DETAILS.get(
-                    controller.task_record_result(
-                        system_state,
-                        controller.MERCHANT_TASK,
-                    ),
-                    "当前周期已检查",
-                )
+            elif task_name == controller.MERCHANT_TASK and available:
+                regions = []
+                if controller.task_is_enabled(system_state, task_name):
+                    regions.append(controller.SAME_REGION)
+                if (controller.cross_region_is_enabled(system_state)
+                        and controller.cross_region_task_is_enabled(system_state, task_name)):
+                    regions.append(controller.CROSS_REGION)
+                self.merchant_regions = tuple(regions)
+                self.merchant_results = {
+                    region: controller.task_record_result(system_state, task_name, region)
+                    for region in regions
+                    if not controller.task_is_due(task_name, system_state, now, region=region)
+                }
             elif task_name == controller.HEART_TEAM_TASK:
                 role = controller.heart_team_role(system_state)
                 role_label = controller.HEART_TEAM_ROLE_DETAILS.get(
@@ -145,18 +155,9 @@ class AccountCardView:
                     due_count == 0 and bounty_style is not None,
                     bounty_style or "default",
                 )
-            elif task_name == controller.MERCHANT_TASK:
-                merchant_style = MERCHANT_HIGHLIGHT_STYLES.get(
-                    controller.task_record_result(
-                        system_state,
-                        controller.MERCHANT_TASK,
-                    )
-                )
-                task_view.set_highlight(
-                    due_count == 0 and merchant_style is not None,
-                    merchant_style or "default",
-                )
             self.task_views[task_name] = task_view
+            if task_name == controller.MERCHANT_TASK and self.merchant_results:
+                self._refresh_merchant_result()
 
         system_icon = (
             ft.Icons.PHONE_IPHONE_ROUNDED
@@ -238,15 +239,49 @@ class AccountCardView:
         """返回当前可见、值得用户关注的悬赏与奸商结果。"""
         if self.task_mode != controller.DAILY_MODE:
             return []
-        labels: list[str] = []
-        for task_name in (controller.BOUNTY_TASK, controller.MERCHANT_TASK):
-            view = self.task_views.get(task_name)
-            if view is None:
-                continue
-            if not view.control.visible or view.status != "done" or not view.highlighted:
-                continue
-            labels.append(str(view.detail.value))
+        labels = []
+        bounty = self.task_views.get(controller.BOUNTY_TASK)
+        if bounty is not None and bounty.control.visible and bounty.status == "done" and bounty.highlighted:
+            labels.append(str(bounty.detail.value))
+        merchant = self.task_views.get(controller.MERCHANT_TASK)
+        if merchant is not None and merchant.control.visible:
+            labels.extend(self._merchant_result_labels(important_only=True))
         return labels
+
+    def _merchant_result_labels(self, *, important_only: bool = False) -> list[str]:
+        results = {}
+        for region in self.merchant_regions:
+            if region in self.merchant_results:
+                result = self.merchant_results[region]
+                if result != "no_blue_ticket" and (not important_only or result in MERCHANT_HIGHLIGHT_STYLES):
+                    results.setdefault(result, []).append(MERCHANT_REGION_SUFFIX[region])
+        labels = []
+        for result, suffixes in results.items():
+            detail = (
+                "因50蓝票跳过" if result == controller.MERCHANT_SKIPPED_RESULT
+                else controller.MERCHANT_RESULT_DETAILS.get(result, "当前周期已检查")
+            )
+            suffix = suffixes[0] if len(suffixes) == 1 else "双"
+            labels.append(f"{detail}（{suffix}）")
+        return labels
+
+    def _refresh_merchant_result(self) -> None:
+        task_view = self.task_views[controller.MERCHANT_TASK]
+        pending = [region for region in self.merchant_regions if region not in self.merchant_results]
+        labels = [label.removeprefix("发现") for label in self._merchant_result_labels(important_only=True)]
+        if not labels:
+            labels = self._merchant_result_labels()
+            labels.extend(f"待检测（{MERCHANT_REGION_SUFFIX[region]}）" for region in pending)
+        task_view.set_status("pending" if pending else "done", "\n".join(labels) or "无蓝票")
+        # 同一卡片有两个价格时，按较低价格高亮。
+        style = next((style for result, style in MERCHANT_HIGHLIGHT_STYLES.items()
+                      if result in self.merchant_results.values()), None)
+        task_view.set_highlight(style is not None, style or "default")
+
+    def set_merchant_result(self, region: str, result: str | None) -> None:
+        if region in self.merchant_regions:
+            self.merchant_results[region] = result
+            self._refresh_merchant_result()
 
     def set_phase(self, status: str, text: str) -> None:
         self.status = status
@@ -317,7 +352,7 @@ class TaskStatusView:
             ),
             size=10,
             color=COLORS["muted"],
-            max_lines=1,
+            max_lines=2 if task_name == controller.MERCHANT_TASK else 1,
             overflow=ft.TextOverflow.ELLIPSIS,
         )
         self.tile = ft.Container(
@@ -376,7 +411,9 @@ class TaskStatusView:
         )
         self.detail.value = detail
         self.detail.color = color if status in {"active", "error", "warning"} else COLORS["muted"]
-        show_highlight = self.highlighted and status == "done"
+        show_highlight = self.highlighted and (
+            status == "done" or (self.task_name == controller.MERCHANT_TASK and status == "pending")
+        )
         highlight = TASK_HIGHLIGHT_STYLES[self.highlight_style]
         if show_highlight:
             self.icon.color = highlight["border"]
